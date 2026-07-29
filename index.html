@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>设计秘书手机版</title>
+    <meta name="theme-color" content="#1f5f55" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="设计秘书" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
+    <link rel="stylesheet" href="./mobile.css" />
+  </head>
+  <body>
+    <main class="phone">
+      <header class="hero">
+        <div>
+          <span class="kicker">手机本地版</span>
+          <h1>设计秘书</h1>
+          <p id="todayLine">今天的项目、里程、垫付款都在这里。</p>
+        </div>
+        <button class="round" id="exportBtn" aria-label="导出备份">⇩</button>
+      </header>
+
+      <section class="screen active" id="homeScreen">
+        <div class="quick-card">
+          <label for="quickText">快速记录</label>
+          <textarea id="quickText" rows="5" placeholder="例如：今天去李女士家水电定位，厨房增加两个插座，往返38公里，替客户付了680元瓷砖样品费。"></textarea>
+          <div class="quick-actions">
+            <button class="ghost" id="voiceBtn">语音</button>
+            <button class="primary" id="saveQuickBtn">保存</button>
+          </div>
+        </div>
+
+        <div class="stats">
+          <article><span>项目</span><strong id="statProjects">0</strong></article>
+          <article><span>待办</span><strong id="statTasks">0</strong></article>
+          <article><span>待收</span><strong id="statMoney">¥0</strong></article>
+          <article><span>本月里程</span><strong id="statMiles">0</strong></article>
+        </div>
+
+        <section class="block">
+          <div class="block-head">
+            <h2>最近记录</h2>
+            <button class="link" data-tab="logs">全部</button>
+          </div>
+          <div class="feed" id="recentFeed"></div>
+        </section>
+      </section>
+
+      <section class="screen" id="projectsScreen">
+        <div class="toolbar">
+          <input id="projectSearch" type="search" placeholder="搜索客户或项目" />
+          <button class="square" id="addProjectBtn">＋</button>
+        </div>
+        <div class="cards" id="projectCards"></div>
+      </section>
+
+      <section class="screen" id="moneyScreen">
+        <div class="toolbar">
+          <button class="primary wide" id="addExpenseBtn">记录垫付款</button>
+        </div>
+        <div class="cards" id="expenseCards"></div>
+      </section>
+
+      <section class="screen" id="milesScreen">
+        <div class="toolbar">
+          <button class="primary wide" id="addMileageBtn">记录里程</button>
+        </div>
+        <div class="quick-card tracker">
+          <label>自动里程</label>
+          <p class="meta" id="trackStatus">打开页面并允许定位后，可以记录本次外出的移动距离。</p>
+          <div class="track-metrics">
+            <article><span>本次距离</span><strong id="trackDistance">0.00 km</strong></article>
+            <article><span>定位点</span><strong id="trackPoints">0</strong></article>
+          </div>
+          <div class="quick-actions">
+            <button class="ghost" id="startTrackBtn">开始</button>
+            <button class="primary" id="stopTrackBtn">结束并保存</button>
+          </div>
+        </div>
+        <div class="cards" id="mileageCards"></div>
+      </section>
+
+      <section class="screen" id="filesScreen">
+        <div class="toolbar">
+          <label class="primary wide file-pick">
+            拍照/上传文件
+            <input id="fileInput" type="file" accept="image/*,.pdf" capture="environment" />
+          </label>
+        </div>
+        <div class="cards file-grid" id="fileCards"></div>
+      </section>
+
+      <section class="screen" id="logsScreen">
+        <div class="cards" id="logCards"></div>
+      </section>
+    </main>
+
+    <nav class="tabs">
+      <button class="active" data-tab="home">首页</button>
+      <button data-tab="projects">项目</button>
+      <button data-tab="money">垫付</button>
+      <button data-tab="miles">里程</button>
+      <button data-tab="files">照片</button>
+    </nav>
+
+    <dialog id="formDialog">
+      <form method="dialog" class="dialog-card" id="dialogForm">
+        <header>
+          <h2 id="dialogTitle">添加</h2>
+          <button class="round small" value="cancel" aria-label="关闭">×</button>
+        </header>
+        <div id="dialogFields"></div>
+        <button class="primary wide" value="default" id="dialogSubmit">保存</button>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast"></div>
+    <script src="./mobile.js"></script>
+  </body>
+</html>

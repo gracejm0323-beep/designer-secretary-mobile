@@ -1,0 +1,15 @@
+{
+  "name": "设计秘书手机版",
+  "short_name": "设计秘书",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f4f0e8",
+  "theme_color": "#1f5f55",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
