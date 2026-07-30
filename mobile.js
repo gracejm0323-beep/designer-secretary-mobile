@@ -30,7 +30,7 @@ const money = value => `¥${Number(value || 0).toLocaleString("zh-CN")}`;
 
 function load() {
   try {
-    return { ...base, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
+    return repairLoadedData({ ...base, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") });
   } catch {
     return structuredClone(base);
   }
@@ -54,9 +54,9 @@ function saveSyncSettings() {
 
 function parseText(text) {
   const now = new Date().toISOString();
-  const customerMatch = text.match(/([\u4e00-\u9fa5]{1,4})(女士|先生|姐|哥|总)/);
-  const customer = customerMatch ? `${customerMatch[1]}${customerMatch[2]}` : "未指定客户";
+  const customer = inferCustomer(text);
   let project = findProjectFromText(text, customer);
+  const result = { project: "", task: "", mileage: "", expense: "", stage: "" };
   if (!project && customer !== "未指定客户") {
     project = {
       id: id(),
@@ -72,6 +72,7 @@ function parseText(text) {
     project.nextActionDate = predictProjectNextDate(project);
     db.projects.unshift(project);
   }
+  if (project) result.project = project.name || project.customer;
 
   const stage = inferStage(text);
   const space = inferSpace(text);
@@ -85,6 +86,7 @@ function parseText(text) {
     date: today(),
     createdAt: now
   });
+  if (stage) result.stage = stage;
 
   const mile = text.match(/(\d+(?:\.\d+)?)\s*(公里|km|KM)/);
   if (mile) {
@@ -102,6 +104,7 @@ function parseText(text) {
       note: text,
       createdAt: now
     });
+    result.mileage = `${mile[1]}公里`;
   }
 
   for (const match of text.matchAll(/(\d+(?:\.\d+)?)\s*元/g)) {
@@ -118,19 +121,25 @@ function parseText(text) {
       note: text,
       createdAt: now
     });
+    result.expense = `${money(Number(match[1]))} ${inferPurpose(text)}`;
   }
 
   if (shouldCreateTask(text)) {
+    const reminder = parseReminderDateTime(text);
+    const title = inferTaskTitle(text);
     db.tasks.unshift({
       id: id(),
       projectId: project?.id || "",
       customer,
-      title: inferTaskTitle(text),
+      title,
       status: "未完成",
-      date: normalizeReminderDate(inferDateText(text)) || today(),
+      date: reminder.date,
+      dueDate: reminder.date,
+      dueTime: reminder.time,
       sourceText: text,
       createdAt: now
     });
+    result.task = `${title}（${reminder.date} ${reminder.time}）`;
   }
 
   if (project && stage) {
@@ -140,6 +149,7 @@ function parseText(text) {
     project.updatedAt = now;
   }
   save();
+  return result;
 }
 
 function inferStage(text) {
@@ -157,6 +167,36 @@ function inferPurpose(text) {
   return ["灯具定金", "瓷砖样品费", "瓷砖补货", "五金", "材料", "运费"].find(item => text.includes(item)) || "客户垫付款";
 }
 
+function inferCustomer(text) {
+  const value = String(text || "").replace(/(今天|今日|昨天|昨日|明天|明日|上午|下午|晚上|早上|中午)/g, "");
+  const match = value.match(/(?:去|到|去了|对接|跟进|拜访|联系)?\s*([\u4e00-\u9fa5]{1,3})(女士|先生|姐|哥|总)/);
+  return match ? cleanCustomerName(`${match[1]}${match[2]}`) : "未指定客户";
+}
+
+function cleanCustomerName(value) {
+  return String(value || "")
+    .replace(/^(今天|今日|昨天|昨日|明天|明日|上午|下午|晚上|早上|中午)/, "")
+    .replace(/^(去|到|去了|对接|跟进|拜访|联系)/, "")
+    .trim();
+}
+
+function repairLoadedData(value) {
+  const copy = { ...base, ...value };
+  copy.projects = (copy.projects || []).map(project => {
+    const customer = cleanCustomerName(project.customer || "");
+    const name = String(project.name || "");
+    const cleanedName = name
+      .replace(/^(今天|今日|昨天|昨日|明天|明日|上午|下午|晚上|早上|中午)/, "")
+      .replace(/^(去|到|去了|对接|跟进|拜访|联系)/, "");
+    return {
+      ...project,
+      customer: customer || project.customer,
+      name: cleanedName || project.name
+    };
+  });
+  return copy;
+}
+
 function inferDateText(text) {
   const value = String(text || "");
   const patterns = [
@@ -165,7 +205,8 @@ function inferDateText(text) {
     /\d{1,2}\s*(号|日)/,
     /\d+\s*天后/,
     /\d*\s*(周|星期|礼拜)后/,
-    /今天|今日|明天|明日|后天|月底|月末/
+    /下周[一二三四五六日天]|周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天]/,
+    /下班前|下班|今晚|今天晚上|明早|明天早上|早上|上午|中午|下午|晚上|今天|今日|明天|明日|后天|月底|月末/
   ];
   return patterns.map(pattern => value.match(pattern)?.[0]).find(Boolean) || "";
 }
@@ -180,14 +221,100 @@ function findProjectFromText(text, customer = "") {
 }
 
 function shouldCreateTask(text) {
-  return /待办|提醒|需要|要|记得|别忘|明天|明日|后天|跟进|修改|整改|复查|确认|收款|收回|报价|对接/.test(String(text || ""));
+  return /待办|提醒|需要|要|记得|别忘|下班前|下班|今晚|上午|中午|下午|晚上|明天|明日|后天|跟进|修改|整改|复查|确认|收款|收回|报价|对接/.test(String(text || ""));
 }
 
 function inferTaskTitle(text) {
   const value = String(text || "").replace(/\s+/g, " ").trim();
   if (value.includes("元") && /收|报销|垫付/.test(value)) return "跟进垫付款收回";
-  const match = value.match(/(?:提醒我|记得|别忘了?|需要|要|明天|明日|后天)(.{2,70})/);
-  return (match ? match[1] : value).replace(/^[，,。；;：:\s]+/, "").slice(0, 60) || "跟进事项";
+  const match = value.match(/(?:提醒我|记得|别忘了?|需要|要|下班前|下班|今晚|今天晚上|上午|中午|下午|晚上|明天|明日|后天)(.{2,70})/);
+  return polishTaskTitle((match ? match[1] : value).replace(/^[，,。；;：:\s]+/, ""));
+}
+
+function polishTaskTitle(text) {
+  let value = String(text || "")
+    .replace(/^(前|后|之前|以后)/, "")
+    .replace(/^(交|提交)(日报|日总结|每日总结)$/, "提交日报")
+    .replace(/^日报$/, "提交日报")
+    .replace(/报价$/, "跟进报价确认")
+    .replace(/效果图$/, "跟进效果图确认")
+    .replace(/方案$/, "跟进方案确认")
+    .trim();
+  if (/日报/.test(value) && !/^提交/.test(value)) value = "提交日报";
+  if (/收款|收回|要钱/.test(value)) value = "跟进款项收回";
+  return value.slice(0, 60) || "跟进事项";
+}
+
+function buildInsight(result) {
+  const parts = [];
+  if (result.project) parts.push(`项目：${result.project}`);
+  if (result.stage) parts.push(`阶段：${result.stage}`);
+  if (result.task) parts.push(`待办：${result.task}`);
+  if (result.mileage) parts.push(`里程：${result.mileage}`);
+  if (result.expense) parts.push(`垫付：${result.expense}`);
+  return parts.length ? `已整理：${parts.join("；")}` : "已保存为工作记录，暂未识别到项目或待办。";
+}
+
+function inferTimeLabel(text, date = today()) {
+  const value = String(text || "");
+  const time = inferTime(value, date);
+  if (/下班前|下班/.test(value)) return `下班前 ${time}`;
+  if (time) return `提醒时间 ${time}`;
+  return "";
+}
+
+function inferTime(text, date = today()) {
+  const value = String(text || "");
+  const explicit = value.match(/([01]?\d|2[0-3])[:：点时](\d{1,2})?/);
+  if (explicit) return `${explicit[1].padStart(2, "0")}:${String(explicit[2] || "00").padStart(2, "0")}`;
+  const chineseHour = value.match(/([一二三四五六七八九十两]{1,3})点(?:半|(\d{1,2})分?)?/);
+  if (chineseHour) {
+    const hour = chineseNumberToHour(chineseHour[1], /下午|晚上|今晚|下班/.test(value));
+    const minute = chineseHour[0].includes("半") ? "30" : String(chineseHour[2] || "00").padStart(2, "0");
+    return `${String(hour).padStart(2, "0")}:${minute}`;
+  }
+  if (/下班前|下班/.test(value)) return closingTime(date);
+  if (/今晚|今天晚上|晚上/.test(value)) return "19:00";
+  if (/明早|明天早上|早上/.test(value)) return "09:30";
+  if (/上午/.test(value)) return "10:00";
+  if (/中午/.test(value)) return "12:00";
+  if (/下午/.test(value)) return "15:00";
+  return isWorkday(date) ? "09:30" : "10:00";
+}
+
+function parseReminderDateTime(text) {
+  const date = normalizeReminderDate(inferDateText(text)) || today();
+  return { date, time: inferTime(text, date) };
+}
+
+function closingTime(date = today()) {
+  const parsed = new Date(`${date}T00:00:00`);
+  const isWeekend = !isWorkday(date);
+  const isSummer = parsed.getMonth() >= 4 && parsed.getMonth() <= 8;
+  if (isSummer) return isWeekend ? "18:00" : "17:30";
+  return isWeekend ? "17:30" : "17:00";
+}
+
+function isWorkday(date = today()) {
+  const parsed = new Date(`${date}T00:00:00`);
+  return ![0, 6].includes(parsed.getDay());
+}
+
+function sortTimeFromLabel(label) {
+  const match = String(label || "").match(/(\d{1,2}):(\d{2})/);
+  return match ? `${match[1].padStart(2, "0")}:${match[2]}` : "23:59";
+}
+
+function currentMinute() {
+  const now = new Date();
+  return `${now.toISOString().slice(0, 10)} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
+function chineseNumberToHour(value, afternoon = false) {
+  const map = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+  let hour = value === "十" ? 10 : value.startsWith("十") ? 10 + (map[value[1]] || 0) : value.endsWith("十") ? (map[value[0]] || 1) * 10 : value.includes("十") ? (map[value[0]] || 1) * 10 + (map[value[2]] || 0) : map[value] || 9;
+  if (afternoon && hour < 12) hour += 12;
+  return Math.min(hour, 23);
 }
 
 function setTab(tab) {
@@ -227,15 +354,31 @@ function renderRecent() {
   $("#recentFeed").innerHTML = db.logs.slice(0, 5).map(logCard).join("") || empty("还没有记录，先说一句今天做了什么。");
 }
 
+function clearRecentLogs() {
+  const logs = visible(db.logs);
+  if (!logs.length) return toast("最近记录已经是空的");
+  if (!confirm("确定清空所有工作记录吗？项目、待办、垫付、里程和照片不会删除。")) return;
+  const deletedAt = new Date().toISOString();
+  for (const log of logs) markDeleted(log, deletedAt);
+  save();
+  render();
+  toast("最近记录已清空");
+}
+
 function renderReminders() {
   if (!$("#todayReminders")) return;
   const reminders = buildReminders();
   $("#reminderSummary").textContent = reminders.length ? `${reminders.length} 条要看` : "今天暂时清爽";
   $("#todayReminders").innerHTML = reminders.slice(0, 8).map(item => `
     <article class="card reminder-card">
-      <h3>${esc(item.title)}</h3>
-      <p class="meta">${esc(item.detail)}</p>
-      <div class="chips"><span class="chip">${esc(item.type)}</span>${item.date ? `<span class="chip">${esc(item.date)}</span>` : ""}</div>
+      <div class="timeline-row">
+        <strong class="timeline-time">${esc(item.time || "待定")}</strong>
+        <div>
+          <h3>${esc(item.title)}</h3>
+          <p class="meta">${esc(item.detail)}</p>
+          <div class="chips"><span class="chip">${esc(item.type)}</span>${item.date ? `<span class="chip">${esc(item.date)}</span>` : ""}</div>
+        </div>
+      </div>
     </article>
   `).join("") || empty("今天没有到期提醒。");
 }
@@ -246,13 +389,18 @@ function buildReminders() {
   const reminders = [];
   for (const task of visible(db.tasks).filter(item => item.status !== "已完成")) {
     const date = normalizeReminderDate(task.dueDate || task.date || "");
+    const time = task.dueTime || inferTime(task.sourceText || task.title || "", date || todayDate);
+    const timeLabel = time ? `提醒时间 ${time}` : inferTimeLabel(task.sourceText || task.title || "", date || todayDate);
+    const dueAt = `${date || todayDate} ${time || sortTimeFromLabel(timeLabel)}`;
+    const isOverdue = dueAt < currentMinute();
     if (!date || date <= next3) {
       reminders.push({
-        type: date && date < todayDate ? "逾期待办" : "待办",
+        type: isOverdue ? "已到点" : "待办",
         title: task.title || "待办事项",
-        detail: projectLabel(task.projectId, task.customer || "未指定项目"),
+        detail: [projectLabel(task.projectId, task.customer || "未指定项目"), timeLabel].filter(Boolean).join(" · "),
         date: date || "未设日期",
-        sort: date || todayDate
+        time: time || sortTimeFromLabel(timeLabel),
+        sort: dueAt
       });
     }
   }
@@ -265,7 +413,8 @@ function buildReminders() {
         title: `${project.name || project.customer}：${prediction.next || "跟进下一步"}`,
         detail: `当前阶段：${project.stage || "待补充"}。${prediction.note}`,
         date: nextDate,
-        sort: nextDate
+        time: "09:30",
+        sort: `${nextDate} 09:30`
       });
     }
   }
@@ -277,7 +426,8 @@ function buildReminders() {
         title: `${expense.customer || "未指定客户"} 待收 ${money(expense.amount)}`,
         detail: expense.purpose || "垫付款",
         date: dueDate,
-        sort: dueDate
+        time: "15:00",
+        sort: `${dueDate} 15:00`
       });
     }
   }
@@ -287,6 +437,7 @@ function buildReminders() {
       title: `${row.customer} 合计待收 ${money(row.total)}`,
       detail: `${row.count} 笔未收`,
       date: "",
+      time: "统计",
       sort: "9999-12-31"
     });
   }
@@ -393,7 +544,7 @@ function hydrateReportProjectSelect() {
 function buildDailyReport(date) {
   const logs = visible(db.logs).filter(item => item.date === date);
   const tasks = visible(db.tasks).filter(item => item.status !== "已完成" && (item.date === date || item.createdAt?.startsWith(date) || /明天|明日|明早|明晚/.test(item.title || "")));
-  const summary = logs.length ? logs.map(item => cleanReportText(item.text)).filter(Boolean).join("；") : "暂无";
+  const summary = logs.length ? logs.map(item => formalizeReportText(item.text)).filter(Boolean).join("；") : "暂无";
   const tomorrow = tasks.length ? tasks.map(item => cleanReportText(item.title)).filter(Boolean).join("；") : "暂无";
   return [
     "姓名：缪梦豪",
@@ -411,6 +562,20 @@ function cleanReportText(text) {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/[。；;]+$/g, "");
+}
+
+function formalizeReportText(text) {
+  let value = cleanReportText(text)
+    .replace(/^(今天|今日|上午|下午|晚上|早上|中午)/, "")
+    .replace(/^(去|到|去了|前往|跑了|开车去)/, "")
+    .replace(/[，,；;]?\s*(往返|来回)?\s*\d+(?:\.\d+)?\s*(公里|km|KM).*?(?=，|,|；|;|。|$)/g, "")
+    .replace(/[，,；;]?\s*(替客户|帮客户|垫付|付了|支付|报销).*?\d+(?:\.\d+)?\s*元.*?(?=，|,|；|;|。|$)/g, "")
+    .replace(/[，,；;。]+$/g, "")
+    .trim();
+  if (!value) return "";
+  value = value.replace(/家(?=(水电|量房|定位|对接|复尺|现场|验收))/, "住宅");
+  if (!/^(完成|推进|对接|确认|修改|整理|跟进|现场)/.test(value)) value = `完成${value}`;
+  return value;
 }
 
 function formatChineseDate(date) {
@@ -507,9 +672,12 @@ function normalizeReminderDate(value) {
   const text = String(value).trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
   const now = new Date();
+  if (/下班前|下班|今晚|今天晚上|上午|中午|下午|晚上/.test(text)) return today();
   if (/今天|今日/.test(text)) return today();
   if (/明天|明日/.test(text)) return addDays(today(), 1);
   if (/后天/.test(text)) return addDays(today(), 2);
+  const weekday = text.match(/(?:下?周|星期|礼拜|周)([一二三四五六日天])/);
+  if (weekday) return nextWeekdayDate(weekday[1], text.includes("下周"));
   const dayAfter = text.match(/(\d+)\s*天后/);
   if (dayAfter) return addDays(today(), Number(dayAfter[1]));
   const weekAfter = text.match(/(\d+)?\s*(周|星期|礼拜)后/);
@@ -535,6 +703,15 @@ function monthEnd(year, zeroMonth) {
 function dateFromParts(year, month, day) {
   const date = new Date(year, month - 1, day);
   return date.toISOString().slice(0, 10);
+}
+
+function nextWeekdayDate(label, forceNextWeek = false) {
+  const map = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 0, 天: 0 };
+  const target = map[label];
+  const now = new Date(`${today()}T00:00:00`);
+  let diff = target - now.getDay();
+  if (diff <= 0 || forceNextWeek) diff += 7;
+  return addDays(today(), diff);
 }
 
 function visible(items) {
@@ -1397,11 +1574,13 @@ $$("[data-tab]").forEach(button => button.addEventListener("click", () => setTab
 $("#saveQuickBtn").addEventListener("click", () => {
   const text = $("#quickText").value.trim();
   if (!text) return toast("先写一句要记录的内容");
-  parseText(text);
+  const insight = parseText(text);
   $("#quickText").value = "";
   render();
-  toast("已自动整理");
+  $("#secretaryInsight").textContent = buildInsight(insight);
+  toast("已整理到对应位置");
 });
+$("#clearRecentBtn").addEventListener("click", clearRecentLogs);
 $("#voiceBtn").addEventListener("click", startVoice);
 $("#addProjectBtn").addEventListener("click", () => openForm("project"));
 $("#addExpenseBtn").addEventListener("click", () => openForm("expense"));

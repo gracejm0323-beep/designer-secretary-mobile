@@ -172,6 +172,12 @@ select:focus {
   justify-content: space-between;
 }
 
+.head-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .primary,
 .ghost,
 .link {
@@ -213,6 +219,10 @@ select:focus {
 .link {
   color: var(--green);
   background: transparent;
+}
+
+.danger-link {
+  color: var(--red);
 }
 
 .wide {
@@ -294,6 +304,23 @@ select:focus {
 .card h3 {
   margin: 0;
   font-size: 16px;
+}
+
+.timeline-row {
+  display: grid;
+  grid-template-columns: 68px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+.timeline-time {
+  min-height: 34px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: var(--green-soft);
+  color: var(--green);
+  font-size: 14px;
 }
 
 .chips {
@@ -398,6 +425,10 @@ select:focus {
   .cards,
   .feed {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #todayReminders {
+    grid-template-columns: 1fr;
   }
 
   #syncScreen.active,

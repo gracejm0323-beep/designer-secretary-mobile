@@ -26,11 +26,12 @@
       <section class="screen active" id="homeScreen">
         <div class="quick-card">
           <label for="quickText">快速记录</label>
-          <textarea id="quickText" rows="5" placeholder="例如：今天去李女士家水电定位，厨房增加两个插座，往返38公里，替客户付了680元瓷砖样品费。"></textarea>
+          <textarea id="quickText" rows="5" placeholder="例如：今天去李女士家水电定位，厨房增加两个插座，往返38公里，替客户付了680元瓷砖样品费。也可以写：提醒我下班前交日报。"></textarea>
           <div class="quick-actions">
             <button class="ghost" id="voiceBtn">语音</button>
             <button class="primary" id="saveQuickBtn">保存</button>
           </div>
+          <p class="meta" id="secretaryInsight">我会自动识别项目、待办、时间、里程和垫付款。</p>
         </div>
 
         <div class="stats">
@@ -51,7 +52,10 @@
         <section class="block">
           <div class="block-head">
             <h2>最近记录</h2>
-            <button class="link" data-tab="logs">全部</button>
+            <div class="head-actions">
+              <button class="link danger-link" id="clearRecentBtn">清空</button>
+              <button class="link" data-tab="logs">全部</button>
+            </div>
           </div>
           <div class="feed" id="recentFeed"></div>
         </section>
