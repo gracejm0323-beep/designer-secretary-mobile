@@ -99,7 +99,7 @@
             <button class="ghost" id="saveLocalFileBtn">保存到本机</button>
             <button class="primary" id="uploadGithubFileBtn">上传到 GitHub</button>
           </div>
-          <p class="meta" id="fileUploadStatus">小文件可以上传到 GitHub 仓库；大视频和大量高清图不建议放 GitHub。</p>
+          <p class="meta" id="fileUploadStatus">图片会自动压缩后保存或上传；大文件建议上传到 GitHub，只在本机保留链接。</p>
         </div>
         <div class="cards file-grid" id="fileCards"></div>
       </section>
@@ -139,6 +139,18 @@
           <input id="repoFolder" type="text" placeholder="文件目录，例如：files" autocomplete="off" />
           <button class="primary wide" id="saveRepoSettingsBtn">保存文件库设置</button>
           <p class="meta">Token 需要这个仓库的 Contents: Read and write 权限。公开仓库里的文件知道链接的人可能能看到。</p>
+        </div>
+
+        <div class="quick-card">
+          <label>GitHub 文件库备份</label>
+          <p class="meta">备份会保存文字数据和文件链接，不建议把大图片原图放进备份。</p>
+          <div class="quick-actions">
+            <button class="ghost" id="loadGithubBackupsBtn">查看备份</button>
+            <button class="primary" id="backupToGithubBtn">备份到文件库</button>
+          </div>
+          <select id="githubBackupSelect"></select>
+          <button class="primary wide" id="restoreGithubBackupBtn">从选中备份恢复</button>
+          <p class="meta" id="githubBackupStatus">备份位置：files/_backups/</p>
         </div>
       </section>
 

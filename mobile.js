@@ -229,6 +229,7 @@ function renderFiles() {
       <h3>${esc(file.name)}</h3>
       <p class="meta">${esc(file.customer || "未指定客户")} · ${esc(file.date)}</p>
       <p class="meta">${esc(file.space || "未设空间")} · ${esc(file.fileType || file.type || "未设类型")} · ${esc(file.version || "未设版本")}</p>
+      ${file.fileSize ? `<p class="meta">大小：${formatFileSize(file.fileSize)}${file.compressed ? ` · 已压缩，原图 ${formatFileSize(file.originalSize)}` : ""}</p>` : ""}
       ${file.url ? `<p class="meta"><a href="${esc(file.url)}" target="_blank" rel="noopener">打开文件</a></p>` : ""}
       ${file.githubPath ? `<p class="meta">GitHub：${esc(file.githubPath)}</p>` : ""}
       <div class="card-actions"><button class="mini-action danger-text" data-delete-type="files" data-delete-id="${file.id}" data-delete-title="${esc(file.name)}">删除</button></div>
@@ -532,11 +533,28 @@ function importData(file) {
   reader.readAsText(file);
 }
 
-function handleFile(file) {
+async function handleFile(file) {
   if (!file) return;
   selectedUploadFile = file;
   $("#selectedFileName").textContent = `${file.name} · ${formatFileSize(file.size)}`;
-  $("#fileUploadStatus").textContent = "已选择文件，可以保存到本机或上传到 GitHub。";
+  $("#fileUploadStatus").textContent = "正在检查文件...";
+  try {
+    const prepared = await prepareUploadFile(file);
+    selectedUploadFile = prepared.file;
+    selectedUploadFile.uploadOriginalName = file.name;
+    selectedUploadFile.uploadOriginalSize = file.size;
+    selectedUploadFile.uploadCompressed = prepared.compressed;
+    $("#selectedFileName").textContent = `${prepared.file.name} · ${formatFileSize(prepared.file.size)}`;
+    $("#fileUploadStatus").textContent = prepared.compressed
+      ? `图片已自动压缩：${formatFileSize(file.size)} → ${formatFileSize(prepared.file.size)}，可以保存或上传。`
+      : "已选择文件，可以保存到本机或上传到 GitHub。";
+  } catch {
+    selectedUploadFile = file;
+    selectedUploadFile.uploadOriginalName = file.name;
+    selectedUploadFile.uploadOriginalSize = file.size;
+    selectedUploadFile.uploadCompressed = false;
+    $("#fileUploadStatus").textContent = "图片压缩没有成功，已保留原文件。";
+  }
 }
 
 function fileMetaFromForm(file) {
@@ -555,6 +573,9 @@ function fileMetaFromForm(file) {
 function saveLocalSelectedFile() {
   const file = selectedUploadFile;
   if (!file) return toast("请先选择文件");
+  if (!file.type?.startsWith("image/") && file.size > 2 * 1024 * 1024) {
+    return toast("大文件请用“上传到 GitHub”，手机本机只保存小文件和压缩图");
+  }
   const reader = new FileReader();
   reader.onload = () => {
     const meta = fileMetaFromForm(file);
@@ -563,6 +584,7 @@ function saveLocalSelectedFile() {
       name: file.name,
       type: file.type,
       ...meta,
+      ...fileStorageMeta(file),
       dataUrl: reader.result,
       date: today(),
       createdAt: new Date().toISOString()
@@ -602,6 +624,7 @@ async function uploadSelectedFileToGithub() {
       name: file.name,
       type: file.type,
       ...meta,
+      ...fileStorageMeta(file),
       dataUrl: dataUrl.startsWith("data:image") && dataUrl.length < 120000 ? dataUrl : "",
       url: fileUrl,
       githubOwner: syncSettings.repoOwner,
@@ -639,6 +662,52 @@ function readFileAsDataUrl(file) {
     reader.onload = () => resolve(reader.result);
     reader.onerror = reject;
     reader.readAsDataURL(file);
+  });
+}
+
+function fileStorageMeta(file) {
+  return {
+    originalName: file.uploadOriginalName || file.name,
+    originalSize: file.uploadOriginalSize || file.size,
+    fileSize: file.size,
+    compressed: Boolean(file.uploadCompressed)
+  };
+}
+
+async function prepareUploadFile(file) {
+  if (!file.type?.startsWith("image/") || file.type === "image/gif" || file.type === "image/svg+xml") {
+    return { file, compressed: false };
+  }
+  if (file.size < 700 * 1024) return { file, compressed: false };
+  const compressed = await compressImageFile(file);
+  if (!compressed || compressed.size >= file.size) return { file, compressed: false };
+  return { file: compressed, compressed: true };
+}
+
+function compressImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const url = URL.createObjectURL(file);
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      const maxSide = 1600;
+      const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.width * scale));
+      canvas.height = Math.max(1, Math.round(image.height * scale));
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(blob => {
+        if (!blob) return reject(new Error("图片压缩失败"));
+        const name = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+        resolve(new File([blob], name, { type: "image/jpeg", lastModified: Date.now() }));
+      }, "image/jpeg", 0.82);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("图片读取失败"));
+    };
+    image.src = url;
   });
 }
 
@@ -832,6 +901,12 @@ function syncPayload() {
     dataUrl: file.dataUrl && file.dataUrl.length > 120000 ? "" : file.dataUrl,
     skippedLargeFile: Boolean(file.dataUrl && file.dataUrl.length > 120000)
   }));
+  return copy;
+}
+
+function backupPayload() {
+  const copy = syncPayload();
+  copy.meta.backupType = "github-file-library";
   return copy;
 }
 
@@ -1038,6 +1113,87 @@ async function mergeSync() {
   await pushSync();
 }
 
+async function backupToGithub() {
+  try {
+    readSyncSettingsFromForm();
+    readRepoSettingsFromForm();
+    $("#githubBackupStatus").textContent = "正在备份到 GitHub 文件库...";
+    const folder = sanitizePathPart(syncSettings.repoFolder || "files");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupPath = `${folder}/_backups/${stamp}-designer-secretary-backup.json`;
+    const encodedPath = backupPath.split("/").map(encodeURIComponent).join("/");
+    await githubRequest(`/repos/${syncSettings.repoOwner}/${syncSettings.repoName}/contents/${encodedPath}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        message: `backup ${backupPath}`,
+        content: stringToBase64(JSON.stringify(backupPayload(), null, 2)),
+        branch: syncSettings.repoBranch || "main"
+      })
+    });
+    $("#githubBackupStatus").textContent = `已备份：${backupPath}`;
+    toast("已备份到 GitHub 文件库");
+    await loadGithubBackups();
+  } catch (error) {
+    $("#githubBackupStatus").textContent = error.message;
+    toast(error.message);
+  }
+}
+
+async function loadGithubBackups() {
+  try {
+    readSyncSettingsFromForm();
+    readRepoSettingsFromForm();
+    $("#githubBackupStatus").textContent = "正在读取备份列表...";
+    const folder = `${sanitizePathPart(syncSettings.repoFolder || "files")}/_backups`;
+    const encodedPath = folder.split("/").map(encodeURIComponent).join("/");
+    const files = await githubRequest(`/repos/${syncSettings.repoOwner}/${syncSettings.repoName}/contents/${encodedPath}?ref=${encodeURIComponent(syncSettings.repoBranch || "main")}`);
+    const backups = (Array.isArray(files) ? files : [])
+      .filter(file => file.name?.endsWith(".json"))
+      .sort((a, b) => b.name.localeCompare(a.name));
+    $("#githubBackupSelect").innerHTML = backups.map(file => `<option value="${esc(file.path)}">${esc(file.name)}</option>`).join("");
+    $("#githubBackupStatus").textContent = backups.length ? `找到 ${backups.length} 个备份。` : "还没有备份。";
+  } catch (error) {
+    const emptyMessage = /not found/i.test(error.message) ? "还没有备份文件夹，先点“备份到文件库”。" : error.message;
+    $("#githubBackupSelect").innerHTML = "";
+    $("#githubBackupStatus").textContent = emptyMessage;
+    toast(emptyMessage);
+  }
+}
+
+async function restoreGithubBackup() {
+  const backupPath = $("#githubBackupSelect").value;
+  if (!backupPath) return toast("请先选择一个备份");
+  try {
+    readSyncSettingsFromForm();
+    readRepoSettingsFromForm();
+    $("#githubBackupStatus").textContent = "正在下载并恢复备份...";
+    const encodedPath = backupPath.split("/").map(encodeURIComponent).join("/");
+    const file = await githubRequest(`/repos/${syncSettings.repoOwner}/${syncSettings.repoName}/contents/${encodedPath}?ref=${encodeURIComponent(syncSettings.repoBranch || "main")}`);
+    const incoming = normalizeDb(JSON.parse(base64ToString(file.content || "")));
+    db = mergeDb(db, incoming);
+    save();
+    render();
+    $("#githubBackupStatus").textContent = "备份已恢复并合并到当前设备。";
+    toast("备份已恢复");
+  } catch (error) {
+    $("#githubBackupStatus").textContent = error.message;
+    toast(error.message);
+  }
+}
+
+function stringToBase64(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function base64ToString(value) {
+  const binary = atob(String(value).replace(/\s/g, ""));
+  const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char]));
 }
@@ -1071,6 +1227,9 @@ $("#pushSyncBtn").addEventListener("click", pushSync);
 $("#pullSyncBtn").addEventListener("click", () => pullSync({ merge: true }));
 $("#mergeSyncBtn").addEventListener("click", mergeSync);
 $("#saveRepoSettingsBtn").addEventListener("click", saveRepoSettings);
+$("#backupToGithubBtn").addEventListener("click", backupToGithub);
+$("#loadGithubBackupsBtn").addEventListener("click", loadGithubBackups);
+$("#restoreGithubBackupBtn").addEventListener("click", restoreGithubBackup);
 document.addEventListener("click", event => {
   const button = event.target.closest("[data-delete-type]");
   if (!button) return;
