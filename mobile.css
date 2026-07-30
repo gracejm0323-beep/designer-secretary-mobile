@@ -306,6 +306,17 @@ select:focus {
   font-size: 16px;
 }
 
+.reminder-title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+
+.reminder-title-row h3 {
+  min-width: 0;
+}
+
 .timeline-row {
   display: grid;
   grid-template-columns: 68px 42px 1fr;
@@ -380,8 +391,9 @@ select:focus {
 }
 
 .mini-action.reschedule-action {
-  color: var(--green);
-  background: var(--green-soft);
+  min-width: 54px;
+  color: white;
+  background: var(--green);
 }
 
 .toolbar {

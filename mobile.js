@@ -180,12 +180,14 @@ function repairLoadedData(value) {
     const customer = cleanCustomerName(project.customer || "");
     const cleanedName = cleanProjectName(project.name || "", customer);
     const addressParts = inferAddressParts(`${cleanedName} ${project.address || ""}`);
+    const communityOnly = project.community || addressParts.community || (!addressParts.unitNo && cleanedName && !/\d/.test(cleanedName) ? cleanedName : "");
     return {
       ...project,
       customer: customer || project.customer,
       name: cleanedName || project.name,
-      community: project.community || addressParts.community,
+      community: communityOnly,
       unitNo: project.unitNo || addressParts.unitNo,
+      address: project.address || [communityOnly, project.unitNo || addressParts.unitNo].filter(Boolean).join(" "),
       deadline: normalizeReminderDate(project.deadline || "")
     };
   });
@@ -394,7 +396,7 @@ function parseWorkItems(text, items, now = new Date().toISOString()) {
 
 function parseStructuredReport(text, now = new Date().toISOString()) {
   const reportDate = parseReportDate(text) || today();
-  const summaryText = extractSection(text, "今日总结", "明日工作");
+  const summaryText = extractSection(text, "今日总结", "明日工作") || extractBeforeSection(text, "明日工作");
   const tomorrowText = extractSection(text, "明日工作", "");
   const summaryItems = extractWorkItems(summaryText, { requireMultiple: false });
   const tomorrowItems = extractWorkItems(tomorrowText, { requireMultiple: false });
@@ -458,6 +460,16 @@ function extractSection(text, startLabel, endLabel) {
   return (end >= 0 ? value.slice(bodyStart, end) : value.slice(bodyStart)).trim();
 }
 
+function extractBeforeSection(text, label) {
+  const value = String(text || "");
+  const end = value.indexOf(`${label}：`);
+  if (end < 0) return "";
+  return value.slice(0, end)
+    .replace(/姓名：.*?(?=日期：|今日总结：|明日工作：|$)/g, "")
+    .replace(/日期：.*?(?=今日总结：|明日工作：|$)/g, "")
+    .trim();
+}
+
 function parseReportDate(text) {
   const value = String(text || "");
   const match = value.match(/日期：\s*(?:(\d{4})[-年])?\s*(\d{1,2})\s*月\s*(\d{1,2})\s*(?:号|日)?/);
@@ -469,6 +481,7 @@ function parseReportDate(text) {
 function ensureProject(customer, projectName, text = "", now = new Date().toISOString()) {
   const cleanProject = cleanProjectName(projectName || "", customer);
   const addressParts = inferAddressParts(`${cleanProject} ${text}`);
+  const communityOnly = addressParts.community || extractCommunityOnly(`${cleanProject}${text}`) || (!addressParts.unitNo && cleanProject && !/\d/.test(cleanProject) ? cleanProject : "");
   const cleanCustomer = customer !== "未指定客户" ? cleanCustomerName(customer) : inferCustomer(text);
   let project = findProjectFromText(text, cleanCustomer, cleanProject);
   if (project) return project;
@@ -477,9 +490,9 @@ function ensureProject(customer, projectName, text = "", now = new Date().toISOS
     id: id(),
     customer: cleanCustomer || "未指定客户",
     name,
-    community: addressParts.community,
+    community: communityOnly,
     unitNo: addressParts.unitNo,
-    address: [addressParts.community, addressParts.unitNo].filter(Boolean).join(" "),
+    address: [communityOnly, addressParts.unitNo].filter(Boolean).join(" "),
     deadline: normalizeReminderDate(inferDeadlineText(text)),
     stage: inferStage(text) || "需求沟通",
     style: "",
@@ -494,23 +507,34 @@ function ensureProject(customer, projectName, text = "", now = new Date().toISOS
 
 function extractWorkItems(text, options = {}) {
   const requireMultiple = options.requireMultiple !== false;
+  const parts = splitWorkText(text);
+  const items = parts.flatMap(part => {
+    const mentions = extractProjectMentions(part);
+    if (mentions.length > 1) {
+      return mentions.map(mention => buildWorkItem(extractSegmentForProject(part, mention.name), mention.name));
+    }
+    return [buildWorkItem(part, mentions[0]?.name || "")];
+  }).filter(item => item.projectName || /修改|渲染|对接|报价|模型|方案|效果图|施工图|现场|量房|交付|提交/.test(item.text));
+  return !requireMultiple || items.length > 1 ? items : [];
+}
+
+function splitWorkText(text) {
   const source = String(text || "")
     .replace(/姓名：.*?(?=日期：|今日总结：|明日工作：|$)/g, "")
     .replace(/日期：.*?(?=今日总结：|明日工作：|$)/g, "")
-    .replace(/今日总结：|明日工作：/g, "；");
-  const parts = source.split(/[；;\n。]+/).map(part => part.trim()).filter(Boolean);
-  const items = parts.map(part => {
-    const mention = extractProjectMentions(part)[0];
-    const communityOnly = extractCommunityOnly(part);
-    const projectName = mention?.name || communityOnly;
-    return {
-      text: part,
-      projectName,
-      community: projectName ? inferAddressParts(projectName).community || projectName : "",
-      action: cleanActionText(part, projectName)
-    };
-  }).filter(item => item.projectName || /修改|渲染|对接|报价|模型|方案|效果图|施工图|现场|量房|交付|提交/.test(item.text));
-  return !requireMultiple || items.length > 1 ? items : [];
+    .replace(/今日总结：|明日工作：/g, "；")
+    .replace(/[,，]\s*(?=[\u4e00-\u9fa5A-Za-z]{2,12}\s*\d{1,2}[-－]\d{3,4})/g, "；");
+  return source.split(/[；;\n。]+/).map(part => part.trim()).filter(Boolean);
+}
+
+function buildWorkItem(part, knownProjectName = "") {
+  const projectName = knownProjectName || extractProjectMentions(part)[0]?.name || extractCommunityOnly(part);
+  return {
+    text: part,
+    projectName,
+    community: projectName ? inferAddressParts(projectName).community || projectName : "",
+    action: cleanActionText(part, projectName)
+  };
 }
 
 function extractCommunityOnly(text) {
@@ -547,9 +571,17 @@ function inferProjectTaskTitle(text, projectName = "") {
 function findProjectFromText(text, customer = "", projectName = "") {
   const value = String(text || "");
   const projects = visible(db.projects);
-  return projects.find(item => [projectName, item.customer, item.name, item.address]
+  const wanted = String(projectName || "").replace(/\s+/g, "");
+  if (wanted) {
+    const direct = projects.find(item => [item.name, item.address, projectDisplayName(item), [item.community, item.unitNo].filter(Boolean).join("")]
+      .filter(Boolean)
+      .map(key => String(key).replace(/\s+/g, ""))
+      .some(key => key === wanted));
+    if (direct) return direct;
+  }
+  return projects.find(item => [item.name, item.address, projectDisplayName(item)]
     .filter(Boolean)
-    .some(key => value.includes(key) || item.name === key))
+    .some(key => value.includes(key)))
     || (customer && customer !== "未指定客户" ? projects.find(item => item.customer === customer) : null);
 }
 
@@ -721,10 +753,12 @@ function renderReminders() {
         <strong class="timeline-time">${esc(item.time || "待定")}</strong>
         ${item.action ? `<button class="check-action" data-complete-kind="${esc(item.kind)}" data-complete-id="${esc(item.id)}" aria-label="${esc(item.action)}">✓</button>` : "<span></span>"}
         <div>
-          <h3>${esc(item.title)}</h3>
+          <div class="reminder-title-row">
+            <h3>${esc(item.title)}</h3>
+            ${item.action ? `<button class="mini-action reschedule-action" data-reschedule-kind="${esc(item.kind)}" data-reschedule-id="${esc(item.id)}" data-reschedule-title="${esc(item.title)}">改期</button>` : ""}
+          </div>
           <p class="meta">${esc(item.detail)}</p>
           <div class="chips"><span class="chip">${esc(item.action ? `勾选${item.action}` : item.type)}</span>${item.date ? `<span class="chip">${esc(item.date)}</span>` : ""}</div>
-          ${item.action ? `<div class="card-actions"><button class="mini-action reschedule-action" data-reschedule-kind="${esc(item.kind)}" data-reschedule-id="${esc(item.id)}" data-reschedule-title="${esc(item.title)}">改期</button></div>` : ""}
         </div>
       </div>
     </article>
@@ -744,7 +778,7 @@ function buildReminders() {
     if (!date || date <= next3) {
       reminders.push({
         type: isOverdue ? "已到点" : "待办",
-        title: task.title || "待办事项",
+        title: taskReminderTitle(task),
         detail: [projectLabel(task.projectId, task.customer || "未指定项目"), timeLabel].filter(Boolean).join(" · "),
         date: date || "未设日期",
         time: time || sortTimeFromLabel(timeLabel),
@@ -1060,6 +1094,13 @@ function buildMileageReport() {
 function projectLabel(projectId, fallbackCustomer = "") {
   const project = visible(db.projects).find(item => item.id === projectId);
   return project ? projectDisplayName(project) : fallbackCustomer;
+}
+
+function taskReminderTitle(task) {
+  const title = task.title || "待办事项";
+  const project = projectLabel(task.projectId, task.customer || "");
+  if (!project || title.includes(project) || project === "未指定项目") return title;
+  return `${project}：${title}`;
 }
 
 function projectDisplayName(project) {
