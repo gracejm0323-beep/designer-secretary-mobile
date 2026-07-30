@@ -167,6 +167,20 @@
       </form>
     </dialog>
 
+    <dialog id="deleteDialog">
+      <form method="dialog" class="dialog-card" id="deleteForm">
+        <header>
+          <h2>删除记录</h2>
+          <button class="round small" type="button" id="deleteCloseBtn" aria-label="关闭">×</button>
+        </header>
+        <p class="meta" id="deleteSummary">请选择删除范围。</p>
+        <button class="ghost wide" type="button" id="deleteLocalBtn">只删除当前设备</button>
+        <button class="danger wide" type="button" id="deleteSyncBtn">手机和电脑同步删除</button>
+        <button class="danger-outline wide" type="button" id="deleteGithubBtn">删除 GitHub 仓库文件</button>
+        <p class="meta">建议优先用“同步删除”。GitHub 仓库文件删除只适用于已经上传到仓库并保存了仓库路径的文件。</p>
+      </form>
+    </dialog>
+
     <div class="toast" id="toast"></div>
     <script src="./mobile.js"></script>
   </body>

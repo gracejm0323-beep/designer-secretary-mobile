@@ -19,6 +19,7 @@ let tracker = {
   points: [],
   distance: 0
 };
+let pendingDelete = null;
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -166,11 +167,11 @@ function render() {
 }
 
 function renderStats() {
-  const openTasks = db.tasks.filter(item => item.status !== "已完成").length;
-  const pendingMoney = db.expenses.filter(item => item.status !== "已收回").reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const openTasks = visible(db.tasks).filter(item => item.status !== "已完成").length;
+  const pendingMoney = visible(db.expenses).filter(item => item.status !== "已收回").reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const month = today().slice(0, 7);
-  const miles = db.mileage.filter(item => item.date?.startsWith(month)).reduce((sum, item) => sum + Number(item.distance || 0), 0);
-  $("#statProjects").textContent = db.projects.length;
+  const miles = visible(db.mileage).filter(item => item.date?.startsWith(month)).reduce((sum, item) => sum + Number(item.distance || 0), 0);
+  $("#statProjects").textContent = visible(db.projects).length;
   $("#statTasks").textContent = openTasks;
   $("#statMoney").textContent = money(pendingMoney);
   $("#statMiles").textContent = miles;
@@ -183,22 +184,24 @@ function renderRecent() {
 
 function renderProjects() {
   const q = ($("#projectSearch")?.value || "").trim();
-  const items = db.projects.filter(item => `${item.customer}${item.name}${item.stage}${item.style}`.includes(q));
+  const items = visible(db.projects).filter(item => `${item.customer}${item.name}${item.stage}${item.style}`.includes(q));
   $("#projectCards").innerHTML = items.map(item => `
     <article class="card">
       <h3>${esc(item.name)}</h3>
       <p class="meta">${esc(item.customer)} · ${esc(item.address || "未填写地址")}</p>
       <div class="chips"><span class="chip">${esc(item.stage || "未设阶段")}</span>${item.style ? `<span class="chip">${esc(item.style)}</span>` : ""}</div>
+      <div class="card-actions"><button class="mini-action danger-text" data-delete-type="projects" data-delete-id="${item.id}" data-delete-title="${esc(item.name)}">删除</button></div>
     </article>
   `).join("") || empty("还没有项目");
 }
 
 function renderMoney() {
-  $("#expenseCards").innerHTML = db.expenses.map(item => `
+  $("#expenseCards").innerHTML = visible(db.expenses).map(item => `
     <article class="card">
       <h3>${money(item.amount)} · ${esc(item.purpose)}</h3>
       <p class="meta">${esc(item.customer)} · ${esc(item.plannedReturnDate || "未设收回日期")}</p>
       <div class="chips"><span class="chip">${esc(item.status)}</span></div>
+      <div class="card-actions"><button class="mini-action danger-text" data-delete-type="expenses" data-delete-id="${item.id}" data-delete-title="${esc(item.purpose || "垫付款")}">删除</button></div>
     </article>
   `).join("") || empty("暂无垫付款");
 }
@@ -206,28 +209,31 @@ function renderMoney() {
 function renderMiles() {
   $("#trackDistance").textContent = `${tracker.distance.toFixed(2)} km`;
   $("#trackPoints").textContent = tracker.points.length;
-  $("#mileageCards").innerHTML = db.mileage.map(item => `
+  $("#mileageCards").innerHTML = visible(db.mileage).map(item => `
     <article class="card">
       <h3>${Number(item.distance || 0)} 公里</h3>
       <p class="meta">${esc(item.customer)} · ${esc(item.reason)} · ${esc(item.date)}</p>
       <p class="meta">地点：${esc(item.place || item.to || "待补充地点")}</p>
       <div class="chips"><span class="chip">${item.reimbursed ? "已报销" : "未报销"}</span></div>
+      <div class="card-actions"><button class="mini-action danger-text" data-delete-type="mileage" data-delete-id="${item.id}" data-delete-title="${esc(item.reason || "里程")}">删除</button></div>
     </article>
   `).join("") || empty("暂无里程记录");
 }
 
 function renderFiles() {
-  $("#fileCards").innerHTML = db.files.map(file => `
+  $("#fileCards").innerHTML = visible(db.files).map(file => `
     <article class="card">
       <div class="thumb">${file.dataUrl?.startsWith("data:image") ? `<img src="${file.dataUrl}" alt="${esc(file.name)}">` : "文件"}</div>
       <h3>${esc(file.name)}</h3>
       <p class="meta">${esc(file.customer || "未指定客户")} · ${esc(file.date)}</p>
+      ${file.url ? `<p class="meta"><a href="${esc(file.url)}" target="_blank" rel="noopener">打开文件</a></p>` : ""}
+      <div class="card-actions"><button class="mini-action danger-text" data-delete-type="files" data-delete-id="${file.id}" data-delete-title="${esc(file.name)}">删除</button></div>
     </article>
   `).join("") || empty("还没有照片或文件");
 }
 
 function renderLogs() {
-  $("#logCards").innerHTML = db.logs.map(logCard).join("") || empty("暂无记录");
+  $("#logCards").innerHTML = visible(db.logs).map(logCard).join("") || empty("暂无记录");
 }
 
 function renderReports() {
@@ -243,50 +249,48 @@ function hydrateReportProjectSelect() {
   const current = select.value;
   select.innerHTML = [
     `<option value="">全部项目</option>`,
-    ...db.projects.map(project => `<option value="${project.id}">${esc(project.customer)} - ${esc(project.name)}</option>`)
+    ...visible(db.projects).map(project => `<option value="${project.id}">${esc(project.customer)} - ${esc(project.name)}</option>`)
   ].join("");
   select.value = current;
 }
 
 function buildDailyReport(date) {
-  const logs = db.logs.filter(item => item.date === date);
-  const tasks = db.tasks.filter(item => item.date === date || item.createdAt?.startsWith(date));
-  const expenses = db.expenses.filter(item => item.date === date);
-  const mileage = db.mileage.filter(item => item.date === date);
-  const projectNames = [...new Set(logs.map(item => projectLabel(item.projectId, item.customer)))].filter(Boolean);
-  const totalMiles = mileage.reduce((sum, item) => sum + Number(item.distance || 0), 0);
-  const totalMoney = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const logs = visible(db.logs).filter(item => item.date === date);
+  const tasks = visible(db.tasks).filter(item => item.status !== "已完成" && (item.date === date || item.createdAt?.startsWith(date) || /明天|明日|明早|明晚/.test(item.title || "")));
+  const summary = logs.length ? logs.map(item => cleanReportText(item.text)).filter(Boolean).join("；") : "暂无";
+  const tomorrow = tasks.length ? tasks.map(item => cleanReportText(item.title)).filter(Boolean).join("；") : "暂无";
   return [
-    `${date} 日报`,
-    "",
-    `涉及项目：${projectNames.length ? projectNames.join("、") : "暂无"}`,
-    `工作记录：${logs.length} 条`,
-    `新增待办：${tasks.length} 个`,
-    `今日里程：${totalMiles} 公里`,
-    `今日垫付款：${money(totalMoney)}`,
-    "",
-    "工作记录：",
-    ...(logs.length ? logs.map(item => `- ${item.text}`) : ["- 暂无"]),
-    "",
-    "待跟进事项：",
-    ...(tasks.length ? tasks.map(item => `- ${item.title}`) : ["- 暂无"]),
-    "",
-    "里程明细：",
-    ...(mileage.length ? mileage.map(item => `- ${item.customer || "未指定客户"} ${item.reason || "外出"}：${Number(item.distance || 0)} 公里，地点：${item.place || item.to || "待补充"}`) : ["- 暂无"]),
-    "",
-    "垫付款明细：",
-    ...(expenses.length ? expenses.map(item => `- ${item.customer || "未指定客户"} ${item.purpose || "垫付款"}：${money(item.amount)}`) : ["- 暂无"])
+    "姓名：缪梦豪",
+    `日期：${formatChineseDate(date)}`,
+    `今日总结：${summary}`,
+    `明日工作：${tomorrow}`
   ].join("\n");
 }
 
+function cleanReportText(text) {
+  return String(text || "")
+    .replace(/^明天跟进：/, "")
+    .replace(/^跟进整改\/修改：/, "")
+    .replace(/^跟进垫付款收回$/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[。；;]+$/g, "");
+}
+
+function formatChineseDate(date) {
+  const [, month, day] = String(date).match(/^\d{4}-(\d{2})-(\d{2})$/) || [];
+  if (!month || !day) return date;
+  return `${Number(month)}月${Number(day)}号`;
+}
+
 function buildProjectReport(projectId) {
-  const projects = projectId ? db.projects.filter(item => item.id === projectId) : db.projects;
+  const projects = projectId ? visible(db.projects).filter(item => item.id === projectId) : visible(db.projects);
   if (!projects.length) return "暂无项目。";
   return projects.map(project => {
-    const logs = db.logs.filter(item => item.projectId === project.id);
-    const tasks = db.tasks.filter(item => item.projectId === project.id && item.status !== "已完成");
-    const expenses = db.expenses.filter(item => item.projectId === project.id && item.status !== "已收回");
-    const mileage = db.mileage.filter(item => item.projectId === project.id);
+    const logs = visible(db.logs).filter(item => item.projectId === project.id);
+    const tasks = visible(db.tasks).filter(item => item.projectId === project.id && item.status !== "已完成");
+    const expenses = visible(db.expenses).filter(item => item.projectId === project.id && item.status !== "已收回");
+    const mileage = visible(db.mileage).filter(item => item.projectId === project.id);
     const totalMiles = mileage.reduce((sum, item) => sum + Number(item.distance || 0), 0);
     const pendingMoney = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
     return [
@@ -310,19 +314,24 @@ function buildProjectReport(projectId) {
 }
 
 function buildMileageReport() {
-  const total = db.mileage.reduce((sum, item) => sum + Number(item.distance || 0), 0);
+  const miles = visible(db.mileage);
+  const total = miles.reduce((sum, item) => sum + Number(item.distance || 0), 0);
   return [
     "里程记录",
     "",
     `合计：${total} 公里`,
     "",
-    ...(db.mileage.length ? db.mileage.map(item => `${item.date || ""}｜${item.customer || "未指定客户"}｜${item.reason || "外出"}｜${item.place || item.to || "待补充地点"}｜${Number(item.distance || 0)}公里｜${item.reimbursed ? "已报销" : "未报销"}`) : ["暂无里程记录"])
+    ...(miles.length ? miles.map(item => `${item.date || ""}｜${item.customer || "未指定客户"}｜${item.reason || "外出"}｜${item.place || item.to || "待补充地点"}｜${Number(item.distance || 0)}公里｜${item.reimbursed ? "已报销" : "未报销"}`) : ["暂无里程记录"])
   ].join("\n");
 }
 
 function projectLabel(projectId, fallbackCustomer = "") {
-  const project = db.projects.find(item => item.id === projectId);
+  const project = visible(db.projects).find(item => item.id === projectId);
   return project ? `${project.customer}-${project.name}` : fallbackCustomer;
+}
+
+function visible(items) {
+  return (items || []).filter(item => !item.deletedAt);
 }
 
 function logCard(log) {
@@ -335,6 +344,7 @@ function logCard(log) {
         ${log.stage ? `<span class="chip">${esc(log.stage)}</span>` : ""}
         ${log.space ? `<span class="chip">${esc(log.space)}</span>` : ""}
       </div>
+      <div class="card-actions"><button class="mini-action danger-text" data-delete-type="logs" data-delete-id="${log.id}" data-delete-title="工作记录">删除</button></div>
     </article>
   `;
 }
@@ -346,7 +356,7 @@ function empty(text) {
 function openForm(type) {
   const dialog = $("#formDialog");
   $("#dialogTitle").textContent = { project: "新建项目", expense: "记录垫付款", mileage: "记录里程" }[type];
-  const projectOptions = db.projects.map(p => `<option value="${p.id}">${esc(p.customer)} - ${esc(p.name)}</option>`).join("");
+  const projectOptions = visible(db.projects).map(p => `<option value="${p.id}">${esc(p.customer)} - ${esc(p.name)}</option>`).join("");
   $("#dialogFields").innerHTML = {
     project: `
       <label>客户姓名<input name="customer" placeholder="可先不填，例如：李女士"></label>
@@ -466,9 +476,10 @@ async function copyText(text, label) {
 }
 
 function exportMileageCsv() {
+  const miles = visible(db.mileage);
   const rows = [
     ["日期", "客户", "事项", "去了哪里", "出发地", "目的地", "里程", "报销状态"],
-    ...db.mileage.map(item => [
+    ...miles.map(item => [
       item.date || "",
       item.customer || "未指定客户",
       item.reason || "外出",
@@ -685,13 +696,93 @@ function mergeDb(local, incoming) {
     for (const item of [...(incoming[key] || []), ...(local[key] || [])]) {
       if (!item.id) item.id = id();
       const old = map.get(item.id);
-      if (!old || String(item.updatedAt || item.createdAt || "") > String(old.updatedAt || old.createdAt || "")) {
+      if (!old || recordTime(item) > recordTime(old)) {
         map.set(item.id, item);
       }
     }
-    result[key] = [...map.values()].sort((a, b) => String(b.createdAt || b.date || "").localeCompare(String(a.createdAt || a.date || "")));
+    result[key] = [...map.values()].sort((a, b) => recordTime(b).localeCompare(recordTime(a)));
   }
   return result;
+}
+
+function recordTime(item) {
+  return String(item.updatedAt || item.deletedAt || item.createdAt || item.date || "");
+}
+
+function openDeleteDialog(type, itemId, title) {
+  pendingDelete = { type, itemId, title };
+  $("#deleteSummary").textContent = `要删除：${title || "这条记录"}`;
+  const item = (db[type] || []).find(record => record.id === itemId);
+  const canDeleteGithub = type === "files" && item && item.githubPath && item.githubSha;
+  $("#deleteGithubBtn").disabled = !canDeleteGithub;
+  $("#deleteGithubBtn").textContent = canDeleteGithub ? "删除 GitHub 仓库文件" : "此记录没有 GitHub 仓库文件";
+  $("#deleteDialog").showModal();
+}
+
+function deleteCurrentDevice() {
+  if (!pendingDelete) return;
+  const projectId = pendingDelete.type === "projects" ? pendingDelete.itemId : "";
+  db[pendingDelete.type] = (db[pendingDelete.type] || []).filter(item => item.id !== pendingDelete.itemId);
+  if (projectId) {
+    for (const key of ["logs", "tasks", "expenses", "mileage", "files"]) {
+      db[key] = (db[key] || []).filter(item => item.projectId !== projectId);
+    }
+  }
+  save();
+  $("#deleteDialog").close();
+  render();
+  toast("已从当前设备删除");
+}
+
+function deleteEverywhere() {
+  if (!pendingDelete) return;
+  const item = (db[pendingDelete.type] || []).find(record => record.id === pendingDelete.itemId);
+  if (!item) return;
+  const deletedAt = new Date().toISOString();
+  markDeleted(item, deletedAt);
+  if (pendingDelete.type === "projects") {
+    for (const key of ["logs", "tasks", "expenses", "mileage", "files"]) {
+      for (const related of db[key] || []) {
+        if (related.projectId === pendingDelete.itemId) markDeleted(related, deletedAt);
+      }
+    }
+  }
+  save();
+  $("#deleteDialog").close();
+  render();
+  toast("已标记同步删除，其他设备同步后会消失");
+}
+
+function markDeleted(item, deletedAt) {
+  item.deletedAt = deletedAt;
+  item.updatedAt = deletedAt;
+}
+
+async function deleteGithubFile() {
+  if (!pendingDelete) return;
+  const item = (db[pendingDelete.type] || []).find(record => record.id === pendingDelete.itemId);
+  if (!item || !item.githubPath || !item.githubSha) return toast("这条记录没有可删除的 GitHub 仓库文件");
+  try {
+    readSyncSettingsFromForm();
+    const encodedPath = item.githubPath.split("/").map(encodeURIComponent).join("/");
+    await githubRequest(`/repos/${item.githubOwner}/${item.githubRepo}/contents/${encodedPath}`, {
+      method: "DELETE",
+      body: JSON.stringify({
+        message: `delete ${item.githubPath}`,
+        sha: item.githubSha,
+        branch: item.githubBranch || "main"
+      })
+    });
+    item.githubDeletedAt = new Date().toISOString();
+    item.deletedAt = item.githubDeletedAt;
+    item.updatedAt = item.githubDeletedAt;
+    save();
+    $("#deleteDialog").close();
+    render();
+    toast("GitHub 仓库文件已删除");
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 async function githubRequest(path, options = {}) {
@@ -808,6 +899,15 @@ $("#importInput").addEventListener("change", event => importData(event.target.fi
 $("#pushSyncBtn").addEventListener("click", pushSync);
 $("#pullSyncBtn").addEventListener("click", () => pullSync({ merge: true }));
 $("#mergeSyncBtn").addEventListener("click", mergeSync);
+document.addEventListener("click", event => {
+  const button = event.target.closest("[data-delete-type]");
+  if (!button) return;
+  openDeleteDialog(button.dataset.deleteType, button.dataset.deleteId, button.dataset.deleteTitle);
+});
+$("#deleteCloseBtn").addEventListener("click", () => $("#deleteDialog").close());
+$("#deleteLocalBtn").addEventListener("click", deleteCurrentDevice);
+$("#deleteSyncBtn").addEventListener("click", deleteEverywhere);
+$("#deleteGithubBtn").addEventListener("click", deleteGithubFile);
 $("#reportProjectSelect").addEventListener("change", renderReports);
 $("#copyDailyBtn").addEventListener("click", () => copyText($("#dailyReport").textContent, "日报"));
 $("#copyProjectReportBtn").addEventListener("click", () => copyText($("#projectReport").textContent, "项目进度报告"));
