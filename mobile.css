@@ -127,6 +127,16 @@ dialog {
   gap: 10px;
 }
 
+.settings-fold summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.settings-fold[open] summary {
+  margin-bottom: 4px;
+}
+
 label,
 .muted,
 .meta {
