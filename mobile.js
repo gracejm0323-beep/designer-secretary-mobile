@@ -57,6 +57,9 @@ function saveSyncSettings() {
 
 function parseText(text) {
   const now = new Date().toISOString();
+  if (/今日总结：|明日工作：/.test(text)) return parseStructuredReport(text, now);
+  const workItems = extractWorkItems(text);
+  if (workItems.length > 1) return parseWorkItems(text, workItems, now);
   const projectMentions = extractProjectMentions(text);
   if (projectMentions.length > 1) return parseMultiProjectText(text, projectMentions, now);
   const customer = inferCustomer(text);
@@ -338,6 +341,127 @@ function parseMultiProjectText(text, mentions, now = new Date().toISOString()) {
   return result;
 }
 
+function parseWorkItems(text, items, now = new Date().toISOString()) {
+  const reminder = parseReminderDateTime(text);
+  const result = { project: "", task: "", mileage: "", expense: "", stage: "" };
+  const handled = [];
+  for (const item of items) {
+    const projectName = item.projectName || item.community || "临时项目";
+    const project = ensureProject("未指定客户", projectName, item.text, now);
+    const stage = inferStage(item.text);
+    const title = inferProjectTaskTitle(item.text, projectName);
+    db.logs.unshift({
+      id: id(),
+      projectId: project.id,
+      customer: project.customer,
+      text: item.text,
+      stage,
+      space: inferSpace(item.text),
+      date: today(),
+      createdAt: now
+    });
+    if (shouldCreateTask(item.text) || stage || item.action) {
+      db.tasks.unshift({
+        id: id(),
+        projectId: project.id,
+        customer: project.customer,
+        title,
+        status: "未完成",
+        date: reminder.date,
+        dueDate: reminder.date,
+        dueTime: reminder.time,
+        sourceText: item.text,
+        createdAt: now
+      });
+      handled.push(`${projectDisplayName(project)}：${title}`);
+    }
+    if (stage) {
+      project.stage = stage;
+      project.stageUpdatedAt = now;
+      project.nextActionDate = predictProjectNextDate(project);
+      project.updatedAt = now;
+    }
+  }
+  save();
+  result.project = items.map(item => item.projectName || item.community).filter(Boolean).join("、");
+  result.task = handled.join("；");
+  return result;
+}
+
+function parseStructuredReport(text, now = new Date().toISOString()) {
+  const reportDate = parseReportDate(text) || today();
+  const summaryText = extractSection(text, "今日总结", "明日工作");
+  const tomorrowText = extractSection(text, "明日工作", "");
+  const summaryItems = extractWorkItems(summaryText, { requireMultiple: false });
+  const tomorrowItems = extractWorkItems(tomorrowText, { requireMultiple: false });
+  const result = { project: "", task: "", mileage: "", expense: "", stage: "" };
+  const projects = new Set();
+  const tasks = [];
+
+  for (const item of summaryItems) {
+    const project = ensureProject("未指定客户", item.projectName || item.community || "临时项目", item.text, now);
+    const stage = inferStage(item.text);
+    db.logs.unshift({
+      id: id(),
+      projectId: project.id,
+      customer: project.customer,
+      text: item.text,
+      stage,
+      space: inferSpace(item.text),
+      date: reportDate,
+      createdAt: now
+    });
+    if (stage) {
+      project.stage = stage;
+      project.stageUpdatedAt = now;
+      project.nextActionDate = predictProjectNextDate(project);
+      project.updatedAt = now;
+    }
+    projects.add(projectDisplayName(project));
+  }
+
+  for (const item of tomorrowItems) {
+    const project = ensureProject("未指定客户", item.projectName || item.community || "临时项目", item.text, now);
+    const title = inferProjectTaskTitle(item.text, item.projectName || item.community || project.name);
+    db.tasks.unshift({
+      id: id(),
+      projectId: project.id,
+      customer: project.customer,
+      title,
+      status: "未完成",
+      date: addDays(reportDate, 1),
+      dueDate: addDays(reportDate, 1),
+      dueTime: inferTime(item.text, addDays(reportDate, 1)),
+      sourceText: item.text,
+      createdAt: now
+    });
+    projects.add(projectDisplayName(project));
+    tasks.push(`${projectDisplayName(project)}：${title}`);
+  }
+
+  save();
+  result.project = [...projects].join("、");
+  result.task = tasks.join("；");
+  return result;
+}
+
+function extractSection(text, startLabel, endLabel) {
+  const value = String(text || "");
+  const start = value.indexOf(`${startLabel}：`);
+  if (start < 0) return "";
+  const bodyStart = start + startLabel.length + 1;
+  const end = endLabel ? value.indexOf(`${endLabel}：`, bodyStart) : -1;
+  return (end >= 0 ? value.slice(bodyStart, end) : value.slice(bodyStart)).trim();
+}
+
+function parseReportDate(text) {
+  const value = String(text || "");
+  const match = value.match(/日期：\s*(?:(\d{4})[-年])?\s*(\d{1,2})\s*月\s*(\d{1,2})\s*(?:号|日)?/);
+  if (!match) return "";
+  const year = Number(match[1] || new Date().getFullYear());
+  return dateFromParts(year, Number(match[2]), Number(match[3]));
+}
+
 function ensureProject(customer, projectName, text = "", now = new Date().toISOString()) {
   const cleanProject = cleanProjectName(projectName || "", customer);
   const addressParts = inferAddressParts(`${cleanProject} ${text}`);
@@ -362,6 +486,37 @@ function ensureProject(customer, projectName, text = "", now = new Date().toISOS
   project.nextActionDate = predictProjectNextDate(project);
   db.projects.unshift(project);
   return project;
+}
+
+function extractWorkItems(text, options = {}) {
+  const requireMultiple = options.requireMultiple !== false;
+  const source = String(text || "")
+    .replace(/姓名：.*?(?=日期：|今日总结：|明日工作：|$)/g, "")
+    .replace(/日期：.*?(?=今日总结：|明日工作：|$)/g, "")
+    .replace(/今日总结：|明日工作：/g, "；");
+  const parts = source.split(/[；;\n。]+/).map(part => part.trim()).filter(Boolean);
+  const items = parts.map(part => {
+    const mention = extractProjectMentions(part)[0];
+    const communityOnly = extractCommunityOnly(part);
+    const projectName = mention?.name || communityOnly;
+    return {
+      text: part,
+      projectName,
+      community: projectName ? inferAddressParts(projectName).community || projectName : "",
+      action: cleanActionText(part, projectName)
+    };
+  }).filter(item => item.projectName || /修改|渲染|对接|报价|模型|方案|效果图|施工图|现场|量房|交付|提交/.test(item.text));
+  return !requireMultiple || items.length > 1 ? items : [];
+}
+
+function extractCommunityOnly(text) {
+  const value = String(text || "").replace(/^(今天|今日|明天|明日|上午|下午|晚上|工作|对接|跟进)[:：\s]*/, "");
+  const match = value.match(/^([\u4e00-\u9fa5A-Za-z]{2,12}?)(?=(现场|模型|方案|报价|效果图|施工图|硬装|软装|部分|客户|量房|对接|修改|渲染|材料|合同|软装|定制))/);
+  return match ? match[1] : "";
+}
+
+function cleanActionText(text, projectName = "") {
+  return String(text || "").replace(projectName || "", "").replace(/^[，,。；;：:\s]+/, "").trim();
 }
 
 function extractProjectMentions(text) {
