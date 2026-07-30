@@ -96,6 +96,54 @@
       <section class="screen" id="logsScreen">
         <div class="cards" id="logCards"></div>
       </section>
+
+      <section class="screen" id="syncScreen">
+        <div class="quick-card">
+          <label>备份和同步</label>
+          <p class="meta">导出/导入适合手动搬数据；GitHub Gist 同步适合同一个人的手机和电脑共用一份文字数据。</p>
+          <div class="quick-actions">
+            <button class="ghost" id="importBtn">导入备份</button>
+            <button class="primary" id="exportBtn2">导出备份</button>
+          </div>
+          <input id="importInput" type="file" accept="application/json,.json" hidden />
+        </div>
+
+        <div class="quick-card">
+          <label>GitHub Gist 同步</label>
+          <input id="syncToken" type="password" placeholder="GitHub Token" autocomplete="off" />
+          <input id="syncGistId" type="text" placeholder="Gist ID，第一次可留空" autocomplete="off" />
+          <div class="quick-actions">
+            <button class="ghost" id="pullSyncBtn">从云端下载</button>
+            <button class="ghost" id="pushSyncBtn">上传到云端</button>
+          </div>
+          <button class="primary wide" id="mergeSyncBtn">智能同步</button>
+          <p class="meta" id="syncStatus">Token 只保存在当前浏览器里。同步内容不包含照片原图，避免文件太大。</p>
+        </div>
+      </section>
+
+      <section class="screen" id="reportsScreen">
+        <div class="quick-card">
+          <label>今日日报</label>
+          <pre class="report-text" id="dailyReport"></pre>
+          <button class="primary wide" id="copyDailyBtn">一键复制日报</button>
+        </div>
+
+        <div class="quick-card">
+          <label>项目进度报告</label>
+          <select id="reportProjectSelect"></select>
+          <pre class="report-text" id="projectReport"></pre>
+          <button class="primary wide" id="copyProjectReportBtn">复制项目进度报告</button>
+        </div>
+
+        <div class="quick-card">
+          <label>里程记录导出</label>
+          <pre class="report-text" id="mileageReport"></pre>
+          <div class="quick-actions">
+            <button class="ghost" id="copyMileageBtn">复制里程</button>
+            <button class="primary" id="exportMileageCsvBtn">导出 CSV</button>
+          </div>
+        </div>
+      </section>
     </main>
 
     <nav class="tabs">
@@ -104,13 +152,15 @@
       <button data-tab="money">垫付</button>
       <button data-tab="miles">里程</button>
       <button data-tab="files">照片</button>
+      <button data-tab="sync">同步</button>
+      <button data-tab="reports">报告</button>
     </nav>
 
     <dialog id="formDialog">
       <form method="dialog" class="dialog-card" id="dialogForm">
         <header>
           <h2 id="dialogTitle">添加</h2>
-          <button class="round small" value="cancel" aria-label="关闭">×</button>
+          <button class="round small" type="button" id="dialogCloseBtn" aria-label="关闭">×</button>
         </header>
         <div id="dialogFields"></div>
         <button class="primary wide" value="default" id="dialogSubmit">保存</button>

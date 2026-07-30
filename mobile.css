@@ -336,7 +336,7 @@ select:focus {
   backdrop-filter: blur(18px);
   border-top: 1px solid var(--line);
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(7, 1fr);
   gap: 6px;
 }
 
@@ -345,6 +345,21 @@ select:focus {
   border-radius: 14px;
   background: transparent;
   color: var(--muted);
+  font-size: 12px;
+}
+
+.report-text {
+  margin: 0;
+  padding: 12px;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #faf8f1;
+  white-space: pre-wrap;
+  line-height: 1.7;
+  font-family: inherit;
+  font-size: 14px;
 }
 
 .tabs button.active {

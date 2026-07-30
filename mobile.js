@@ -1,4 +1,6 @@
 const STORAGE_KEY = "designer-secretary-mobile-v1";
+const SYNC_SETTINGS_KEY = "designer-secretary-sync-settings-v1";
+const GIST_FILE = "designer-secretary-data.json";
 
 const base = {
   projects: [],
@@ -11,6 +13,7 @@ const base = {
 
 let db = load();
 let currentTab = "home";
+let syncSettings = loadSyncSettings();
 let tracker = {
   watchId: null,
   points: [],
@@ -33,6 +36,18 @@ function load() {
 
 function save() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+}
+
+function loadSyncSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(SYNC_SETTINGS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveSyncSettings() {
+  localStorage.setItem(SYNC_SETTINGS_KEY, JSON.stringify(syncSettings));
 }
 
 function parseText(text) {
@@ -75,6 +90,9 @@ function parseText(text) {
       date: today(),
       reason: stage || "外出记录",
       distance: Number(mile[1]),
+      from: "",
+      to: inferDestination(text),
+      place: inferDestination(text),
       reimbursed: false,
       note: text,
       createdAt: now
@@ -143,6 +161,8 @@ function render() {
   renderMiles();
   renderFiles();
   renderLogs();
+  renderSyncSettings();
+  renderReports();
 }
 
 function renderStats() {
@@ -190,6 +210,7 @@ function renderMiles() {
     <article class="card">
       <h3>${Number(item.distance || 0)} 公里</h3>
       <p class="meta">${esc(item.customer)} · ${esc(item.reason)} · ${esc(item.date)}</p>
+      <p class="meta">地点：${esc(item.place || item.to || "待补充地点")}</p>
       <div class="chips"><span class="chip">${item.reimbursed ? "已报销" : "未报销"}</span></div>
     </article>
   `).join("") || empty("暂无里程记录");
@@ -207,6 +228,101 @@ function renderFiles() {
 
 function renderLogs() {
   $("#logCards").innerHTML = db.logs.map(logCard).join("") || empty("暂无记录");
+}
+
+function renderReports() {
+  if (!$("#dailyReport")) return;
+  hydrateReportProjectSelect();
+  $("#dailyReport").textContent = buildDailyReport(today());
+  $("#projectReport").textContent = buildProjectReport($("#reportProjectSelect").value);
+  $("#mileageReport").textContent = buildMileageReport();
+}
+
+function hydrateReportProjectSelect() {
+  const select = $("#reportProjectSelect");
+  const current = select.value;
+  select.innerHTML = [
+    `<option value="">全部项目</option>`,
+    ...db.projects.map(project => `<option value="${project.id}">${esc(project.customer)} - ${esc(project.name)}</option>`)
+  ].join("");
+  select.value = current;
+}
+
+function buildDailyReport(date) {
+  const logs = db.logs.filter(item => item.date === date);
+  const tasks = db.tasks.filter(item => item.date === date || item.createdAt?.startsWith(date));
+  const expenses = db.expenses.filter(item => item.date === date);
+  const mileage = db.mileage.filter(item => item.date === date);
+  const projectNames = [...new Set(logs.map(item => projectLabel(item.projectId, item.customer)))].filter(Boolean);
+  const totalMiles = mileage.reduce((sum, item) => sum + Number(item.distance || 0), 0);
+  const totalMoney = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  return [
+    `${date} 日报`,
+    "",
+    `涉及项目：${projectNames.length ? projectNames.join("、") : "暂无"}`,
+    `工作记录：${logs.length} 条`,
+    `新增待办：${tasks.length} 个`,
+    `今日里程：${totalMiles} 公里`,
+    `今日垫付款：${money(totalMoney)}`,
+    "",
+    "工作记录：",
+    ...(logs.length ? logs.map(item => `- ${item.text}`) : ["- 暂无"]),
+    "",
+    "待跟进事项：",
+    ...(tasks.length ? tasks.map(item => `- ${item.title}`) : ["- 暂无"]),
+    "",
+    "里程明细：",
+    ...(mileage.length ? mileage.map(item => `- ${item.customer || "未指定客户"} ${item.reason || "外出"}：${Number(item.distance || 0)} 公里，地点：${item.place || item.to || "待补充"}`) : ["- 暂无"]),
+    "",
+    "垫付款明细：",
+    ...(expenses.length ? expenses.map(item => `- ${item.customer || "未指定客户"} ${item.purpose || "垫付款"}：${money(item.amount)}`) : ["- 暂无"])
+  ].join("\n");
+}
+
+function buildProjectReport(projectId) {
+  const projects = projectId ? db.projects.filter(item => item.id === projectId) : db.projects;
+  if (!projects.length) return "暂无项目。";
+  return projects.map(project => {
+    const logs = db.logs.filter(item => item.projectId === project.id);
+    const tasks = db.tasks.filter(item => item.projectId === project.id && item.status !== "已完成");
+    const expenses = db.expenses.filter(item => item.projectId === project.id && item.status !== "已收回");
+    const mileage = db.mileage.filter(item => item.projectId === project.id);
+    const totalMiles = mileage.reduce((sum, item) => sum + Number(item.distance || 0), 0);
+    const pendingMoney = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    return [
+      `项目：${project.name}`,
+      `客户：${project.customer}`,
+      `地址：${project.address || "待补充"}`,
+      `当前阶段：${project.stage || "待补充"}`,
+      `风格：${project.style || "待补充"}`,
+      `工作记录：${logs.length} 条`,
+      `未完成待办：${tasks.length} 个`,
+      `项目里程：${totalMiles} 公里`,
+      `待收垫付款：${money(pendingMoney)}`,
+      "",
+      "最近进展：",
+      ...(logs.slice(0, 5).map(item => `- ${item.date} ${item.text}`).length ? logs.slice(0, 5).map(item => `- ${item.date} ${item.text}`) : ["- 暂无"]),
+      "",
+      "待办事项：",
+      ...(tasks.length ? tasks.slice(0, 8).map(item => `- ${item.title}`) : ["- 暂无"])
+    ].join("\n");
+  }).join("\n\n----------------\n\n");
+}
+
+function buildMileageReport() {
+  const total = db.mileage.reduce((sum, item) => sum + Number(item.distance || 0), 0);
+  return [
+    "里程记录",
+    "",
+    `合计：${total} 公里`,
+    "",
+    ...(db.mileage.length ? db.mileage.map(item => `${item.date || ""}｜${item.customer || "未指定客户"}｜${item.reason || "外出"}｜${item.place || item.to || "待补充地点"}｜${Number(item.distance || 0)}公里｜${item.reimbursed ? "已报销" : "未报销"}`) : ["暂无里程记录"])
+  ].join("\n");
+}
+
+function projectLabel(projectId, fallbackCustomer = "") {
+  const project = db.projects.find(item => item.id === projectId);
+  return project ? `${project.customer}-${project.name}` : fallbackCustomer;
 }
 
 function logCard(log) {
@@ -233,22 +349,25 @@ function openForm(type) {
   const projectOptions = db.projects.map(p => `<option value="${p.id}">${esc(p.customer)} - ${esc(p.name)}</option>`).join("");
   $("#dialogFields").innerHTML = {
     project: `
-      <label>客户姓名<input name="customer" required placeholder="李女士"></label>
-      <label>项目名称<input name="name" placeholder="李女士住宅项目"></label>
+      <label>客户姓名<input name="customer" placeholder="可先不填，例如：李女士"></label>
+      <label>项目名称<input name="name" placeholder="可先写：临时出图项目"></label>
       <label>地址<input name="address" placeholder="小区/房号"></label>
       <label>阶段<input name="stage" placeholder="水电施工"></label>
       <label>风格<input name="style" placeholder="现代原木风"></label>
     `,
     expense: `
       <label>项目<select name="projectId">${projectOptions}</select></label>
-      <label>金额<input name="amount" type="number" required placeholder="680"></label>
-      <label>用途<input name="purpose" required placeholder="瓷砖样品费"></label>
+      <label>金额<input name="amount" type="number" placeholder="680"></label>
+      <label>用途<input name="purpose" placeholder="可后补，例如：瓷砖样品费"></label>
       <label>计划收回<input name="plannedReturnDate" placeholder="月底"></label>
     `,
     mileage: `
       <label>项目<select name="projectId">${projectOptions}</select></label>
-      <label>事项<input name="reason" required placeholder="现场量房"></label>
-      <label>里程<input name="distance" type="number" required placeholder="38"></label>
+      <label>事项<input name="reason" placeholder="可后补，例如：现场量房"></label>
+      <label>里程<input name="distance" type="number" placeholder="38"></label>
+      <label>去了哪里<input name="place" placeholder="例如：李女士家 / 建材市场"></label>
+      <label>出发地<input name="from" placeholder="例如：工作室"></label>
+      <label>目的地<input name="to" placeholder="例如：客户家"></label>
       <label>日期<input name="date" type="date" value="${today()}"></label>
     `
   }[type];
@@ -261,14 +380,15 @@ function submitForm(event) {
   const type = $("#dialogForm").dataset.type;
   const form = new FormData($("#dialogForm"));
   if (type === "project") {
-    const customer = form.get("customer");
+    const customer = String(form.get("customer") || "").trim() || "未知客户";
+    const name = String(form.get("name") || "").trim() || `${customer}项目`;
     db.projects.unshift({
       id: id(),
       customer,
-      name: form.get("name") || `${customer}住宅项目`,
-      address: form.get("address"),
-      stage: form.get("stage") || "需求沟通",
-      style: form.get("style"),
+      name,
+      address: form.get("address") || "",
+      stage: form.get("stage") || "待补充",
+      style: form.get("style") || "",
       createdAt: new Date().toISOString()
     });
   }
@@ -278,9 +398,9 @@ function submitForm(event) {
       id: id(),
       projectId: project?.id || "",
       customer: project?.customer || "未指定客户",
-      amount: Number(form.get("amount")),
-      purpose: form.get("purpose"),
-      plannedReturnDate: form.get("plannedReturnDate"),
+      amount: Number(form.get("amount") || 0),
+      purpose: form.get("purpose") || "待补充用途",
+      plannedReturnDate: form.get("plannedReturnDate") || "",
       status: "待收回",
       date: today(),
       createdAt: new Date().toISOString()
@@ -292,8 +412,11 @@ function submitForm(event) {
       id: id(),
       projectId: project?.id || "",
       customer: project?.customer || "未指定客户",
-      reason: form.get("reason"),
-      distance: Number(form.get("distance")),
+      reason: form.get("reason") || "待补充事项",
+      distance: Number(form.get("distance") || 0),
+      place: form.get("place") || form.get("to") || "待补充地点",
+      from: form.get("from") || "",
+      to: form.get("to") || form.get("place") || "",
       date: form.get("date") || today(),
       reimbursed: false,
       createdAt: new Date().toISOString()
@@ -318,13 +441,69 @@ function startVoice() {
 }
 
 function exportData() {
-  const blob = new Blob([JSON.stringify(db, null, 2)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify(withMeta(db), null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = `设计秘书备份-${today()}.json`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+async function copyText(text, label) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${label}已复制`);
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+    toast(`${label}已复制`);
+  }
+}
+
+function exportMileageCsv() {
+  const rows = [
+    ["日期", "客户", "事项", "去了哪里", "出发地", "目的地", "里程", "报销状态"],
+    ...db.mileage.map(item => [
+      item.date || "",
+      item.customer || "未指定客户",
+      item.reason || "外出",
+      item.place || item.to || "待补充地点",
+      item.from || "",
+      item.to || "",
+      Number(item.distance || 0),
+      item.reimbursed ? "已报销" : "未报销"
+    ])
+  ];
+  const csv = rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `里程记录-${today()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function importData(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const incoming = normalizeDb(JSON.parse(reader.result));
+      db = mergeDb(db, incoming);
+      save();
+      render();
+      toast("备份已导入并合并");
+    } catch {
+      toast("备份文件格式不对");
+    }
+  };
+  reader.readAsText(file);
 }
 
 function handleFile(file) {
@@ -390,6 +569,8 @@ function stopTracking() {
     renderMiles();
     return;
   }
+  const firstPoint = tracker.points[0];
+  const lastPoint = tracker.points[tracker.points.length - 1];
   db.mileage.unshift({
     id: id(),
     projectId: "",
@@ -397,6 +578,9 @@ function stopTracking() {
     reason: "手机定位里程",
     distance: Number(tracker.distance.toFixed(2)),
     date: today(),
+    place: trackerPlaceLabel(),
+    from: firstPoint ? `${firstPoint.lat.toFixed(6)},${firstPoint.lng.toFixed(6)}` : "",
+    to: lastPoint ? `${lastPoint.lat.toFixed(6)},${lastPoint.lng.toFixed(6)}` : "",
     reimbursed: false,
     points: tracker.points,
     createdAt: new Date().toISOString()
@@ -420,11 +604,178 @@ function distanceMeters(a, b) {
   return 2 * radius * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
+function trackerPlaceLabel() {
+  const firstPoint = tracker.points[0];
+  const lastPoint = tracker.points[tracker.points.length - 1];
+  if (!firstPoint || !lastPoint) return "手机定位里程";
+  return `从 ${firstPoint.lat.toFixed(4)},${firstPoint.lng.toFixed(4)} 到 ${lastPoint.lat.toFixed(4)},${lastPoint.lng.toFixed(4)}`;
+}
+
+function inferDestination(text) {
+  const patterns = [
+    /去(.{1,16}?)(?:，|。|,|\.|往返|来回|跑了|开车|$)/,
+    /去了(.{1,16}?)(?:，|。|,|\.|往返|来回|跑了|开车|$)/,
+    /到(.{1,16}?)(?:，|。|,|\.|往返|来回|跑了|开车|$)/
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return match[1].trim();
+  }
+  return "";
+}
+
 function toast(text) {
   $("#toast").textContent = text;
   $("#toast").classList.add("show");
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => $("#toast").classList.remove("show"), 2200);
+}
+
+function renderSyncSettings() {
+  const token = $("#syncToken");
+  const gist = $("#syncGistId");
+  if (!token || document.activeElement === token || document.activeElement === gist) return;
+  token.value = syncSettings.token || "";
+  gist.value = syncSettings.gistId || "";
+}
+
+function readSyncSettingsFromForm() {
+  syncSettings.token = $("#syncToken").value.trim();
+  syncSettings.gistId = $("#syncGistId").value.trim();
+  saveSyncSettings();
+  if (!syncSettings.token) throw new Error("请先填写 GitHub Token");
+}
+
+function syncPayload() {
+  const copy = withMeta(db);
+  copy.files = copy.files.map(file => ({
+    ...file,
+    dataUrl: file.dataUrl && file.dataUrl.length > 120000 ? "" : file.dataUrl,
+    skippedLargeFile: Boolean(file.dataUrl && file.dataUrl.length > 120000)
+  }));
+  return copy;
+}
+
+function withMeta(value) {
+  return {
+    ...structuredClone(value),
+    meta: {
+      app: "designer-secretary",
+      version: 1,
+      exportedAt: new Date().toISOString()
+    }
+  };
+}
+
+function normalizeDb(value) {
+  return {
+    projects: Array.isArray(value.projects) ? value.projects : [],
+    logs: Array.isArray(value.logs) ? value.logs : [],
+    tasks: Array.isArray(value.tasks) ? value.tasks : [],
+    expenses: Array.isArray(value.expenses) ? value.expenses : [],
+    mileage: Array.isArray(value.mileage) ? value.mileage : [],
+    files: Array.isArray(value.files) ? value.files : []
+  };
+}
+
+function mergeDb(local, incoming) {
+  const result = structuredClone(base);
+  for (const key of Object.keys(base)) {
+    const map = new Map();
+    for (const item of [...(incoming[key] || []), ...(local[key] || [])]) {
+      if (!item.id) item.id = id();
+      const old = map.get(item.id);
+      if (!old || String(item.updatedAt || item.createdAt || "") > String(old.updatedAt || old.createdAt || "")) {
+        map.set(item.id, item);
+      }
+    }
+    result[key] = [...map.values()].sort((a, b) => String(b.createdAt || b.date || "").localeCompare(String(a.createdAt || a.date || "")));
+  }
+  return result;
+}
+
+async function githubRequest(path, options = {}) {
+  const response = await fetch(`https://api.github.com${path}`, {
+    ...options,
+    headers: {
+      "Accept": "application/vnd.github+json",
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${syncSettings.token}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(options.headers || {})
+    }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.message || "GitHub 同步失败");
+  return data;
+}
+
+async function ensureGist() {
+  if (syncSettings.gistId) return syncSettings.gistId;
+  const gist = await githubRequest("/gists", {
+    method: "POST",
+    body: JSON.stringify({
+      description: "设计秘书数据同步",
+      public: false,
+      files: {
+        [GIST_FILE]: {
+          content: JSON.stringify(syncPayload(), null, 2)
+        }
+      }
+    })
+  });
+  syncSettings.gistId = gist.id;
+  saveSyncSettings();
+  $("#syncGistId").value = gist.id;
+  return gist.id;
+}
+
+async function pushSync() {
+  try {
+    readSyncSettingsFromForm();
+    $("#syncStatus").textContent = "正在上传到 GitHub Gist...";
+    const gistId = await ensureGist();
+    await githubRequest(`/gists/${gistId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        files: {
+          [GIST_FILE]: {
+            content: JSON.stringify(syncPayload(), null, 2)
+          }
+        }
+      })
+    });
+    $("#syncStatus").textContent = "已上传。电脑和手机用同一个 Token/Gist ID 就能下载。";
+    toast("已上传到云端");
+  } catch (error) {
+    $("#syncStatus").textContent = error.message;
+    toast(error.message);
+  }
+}
+
+async function pullSync({ merge = true } = {}) {
+  try {
+    readSyncSettingsFromForm();
+    if (!syncSettings.gistId) throw new Error("请填写 Gist ID，或先上传创建一个");
+    $("#syncStatus").textContent = "正在从 GitHub Gist 下载...";
+    const gist = await githubRequest(`/gists/${syncSettings.gistId}`);
+    const content = gist.files?.[GIST_FILE]?.content;
+    if (!content) throw new Error("这个 Gist 里没有设计秘书数据");
+    const incoming = normalizeDb(JSON.parse(content));
+    db = merge ? mergeDb(db, incoming) : incoming;
+    save();
+    render();
+    $("#syncStatus").textContent = "已下载并合并。";
+    toast("已从云端下载");
+  } catch (error) {
+    $("#syncStatus").textContent = error.message;
+    toast(error.message);
+  }
+}
+
+async function mergeSync() {
+  await pullSync({ merge: true });
+  await pushSync();
 }
 
 function esc(value) {
@@ -447,9 +798,21 @@ $("#addMileageBtn").addEventListener("click", () => openForm("mileage"));
 $("#startTrackBtn").addEventListener("click", startTracking);
 $("#stopTrackBtn").addEventListener("click", stopTracking);
 $("#dialogForm").addEventListener("submit", submitForm);
+$("#dialogCloseBtn").addEventListener("click", () => $("#formDialog").close());
 $("#projectSearch").addEventListener("input", renderProjects);
 $("#fileInput").addEventListener("change", event => handleFile(event.target.files[0]));
 $("#exportBtn").addEventListener("click", exportData);
+$("#exportBtn2").addEventListener("click", exportData);
+$("#importBtn").addEventListener("click", () => $("#importInput").click());
+$("#importInput").addEventListener("change", event => importData(event.target.files[0]));
+$("#pushSyncBtn").addEventListener("click", pushSync);
+$("#pullSyncBtn").addEventListener("click", () => pullSync({ merge: true }));
+$("#mergeSyncBtn").addEventListener("click", mergeSync);
+$("#reportProjectSelect").addEventListener("change", renderReports);
+$("#copyDailyBtn").addEventListener("click", () => copyText($("#dailyReport").textContent, "日报"));
+$("#copyProjectReportBtn").addEventListener("click", () => copyText($("#projectReport").textContent, "项目进度报告"));
+$("#copyMileageBtn").addEventListener("click", () => copyText($("#mileageReport").textContent, "里程记录"));
+$("#exportMileageCsvBtn").addEventListener("click", exportMileageCsv);
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
 render();
