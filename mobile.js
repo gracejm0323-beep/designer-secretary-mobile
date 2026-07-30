@@ -70,16 +70,18 @@ function parseText(text) {
 
   const stage = inferStage(text);
   const space = inferSpace(text);
-  db.logs.unshift({
-    id: id(),
-    projectId: project?.id || "",
-    customer,
-    text,
-    stage,
-    space,
-    date: today(),
-    createdAt: now
-  });
+  if (!isAdminReminder(text)) {
+    db.logs.unshift({
+      id: id(),
+      projectId: project?.id || "",
+      customer,
+      text,
+      stage,
+      space,
+      date: today(),
+      createdAt: now
+    });
+  }
   if (stage) result.stage = stage;
 
   const mile = text.match(/(\d+(?:\.\d+)?)\s*(公里|km|KM)/);
@@ -193,6 +195,7 @@ function repairLoadedData(value) {
       projectName: item.projectName ? cleanProjectName(item.projectName, item.customer) : item.projectName
     }));
   }
+  copy.logs = (copy.logs || []).map(item => isAdminReminder(item.text) ? { ...item, deletedAt: item.deletedAt || new Date().toISOString() } : item);
   splitLegacyMultiProjectTasks(copy);
   return copy;
 }
@@ -553,6 +556,13 @@ function shouldCreateTask(text) {
   return /待办|提醒|需要|要|记得|别忘|下班前|下班|今晚|上午|中午|下午|晚上|明天|明日|后天|跟进|修改|整改|复查|确认|收款|收回|报价|对接/.test(String(text || ""));
 }
 
+function isAdminReminder(text) {
+  const value = String(text || "");
+  return /提醒|记得|别忘|下班前|今晚|明天|明日|今天/.test(value)
+    && /交日报|提交日报|日报|日总结|每日总结/.test(value)
+    && !/(项目|方案|报价|效果图|施工图|现场|模型|渲染|量房|水电|硬装|软装|客户)/.test(value);
+}
+
 function inferTaskTitle(text) {
   const value = String(text || "").replace(/\s+/g, " ").trim();
   if (value.includes("元") && /收|报销|垫付/.test(value)) return "跟进垫付款收回";
@@ -682,7 +692,7 @@ function renderStats() {
 }
 
 function renderRecent() {
-  $("#recentFeed").innerHTML = db.logs.slice(0, 5).map(logCard).join("") || empty("还没有记录，先说一句今天做了什么。");
+  $("#recentFeed").innerHTML = visible(db.logs).filter(item => !isAdminReminder(item.text)).slice(0, 5).map(logCard).join("") || empty("还没有记录，先说一句今天做了什么。");
 }
 
 function clearRecentLogs() {
@@ -877,7 +887,7 @@ function hydrateFileProjectSelect() {
 }
 
 function renderLogs() {
-  $("#logCards").innerHTML = visible(db.logs).map(logCard).join("") || empty("暂无记录");
+  $("#logCards").innerHTML = visible(db.logs).filter(item => !isAdminReminder(item.text)).map(logCard).join("") || empty("暂无记录");
 }
 
 function renderReports() {
@@ -899,8 +909,8 @@ function hydrateReportProjectSelect() {
 }
 
 function buildDailyReport(date) {
-  const logs = visible(db.logs).filter(item => item.date === date);
-  const tasks = visible(db.tasks).filter(item => item.status !== "已完成" && (item.date === date || item.createdAt?.startsWith(date) || /明天|明日|明早|明晚/.test(item.title || "")));
+  const logs = visible(db.logs).filter(item => item.date === date && !isAdminReminder(item.text));
+  const tasks = visible(db.tasks).filter(item => item.status !== "已完成" && !isAdminReminder(`${item.title || ""} ${item.sourceText || ""}`) && (item.date === date || item.createdAt?.startsWith(date) || /明天|明日|明早|明晚/.test(item.title || "")));
   const summary = logs.length ? logs.map(item => formalizeReportText(item.text)).filter(Boolean).join("；") : "暂无";
   const tomorrow = tasks.length ? tasks.map(item => cleanReportText(item.title)).filter(Boolean).join("；") : "暂无";
   return [
