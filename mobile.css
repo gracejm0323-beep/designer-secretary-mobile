@@ -343,6 +343,92 @@ select:focus {
   background: var(--green);
 }
 
+@media (min-width: 900px) {
+  .phone {
+    width: min(100%, 1180px);
+    padding: 28px 28px 96px;
+  }
+
+  .hero {
+    min-height: 176px;
+    padding: 28px 32px;
+  }
+
+  h1 {
+    font-size: 42px;
+  }
+
+  .hero p {
+    max-width: 680px;
+  }
+
+  .screen.active {
+    display: grid;
+    gap: 16px;
+  }
+
+  #homeScreen.active {
+    grid-template-columns: minmax(320px, 420px) 1fr;
+    align-items: start;
+  }
+
+  #homeScreen .stats {
+    grid-column: 1 / -1;
+    order: -1;
+  }
+
+  #homeScreen .block {
+    min-height: 100%;
+  }
+
+  .stats {
+    grid-template-columns: repeat(4, minmax(140px, 1fr));
+    gap: 12px;
+  }
+
+  .stats article {
+    min-height: 92px;
+    padding: 16px;
+  }
+
+  .stats strong {
+    font-size: 26px;
+  }
+
+  .cards,
+  .feed {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #syncScreen.active,
+  #reportsScreen.active,
+  #filesScreen.active {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  #reportsScreen .quick-card:first-child,
+  #reportsScreen .quick-card:nth-child(2),
+  #filesScreen .quick-card:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .file-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .report-text {
+    max-height: 420px;
+  }
+
+  .tabs {
+    width: min(100%, 1180px);
+    left: 50%;
+    transform: translateX(-50%);
+    border-radius: 22px 22px 0 0;
+  }
+}
+
 .file-pick {
   position: relative;
 }
@@ -458,4 +544,21 @@ dialog::backdrop {
 
 .toast.show {
   display: block;
+}
+
+@media (min-width: 900px) {
+  .tabs {
+    width: min(100%, 1180px);
+    left: 50%;
+    transform: translateX(-50%);
+    border-radius: 22px 22px 0 0;
+  }
+
+  .file-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .report-text {
+    max-height: 420px;
+  }
 }

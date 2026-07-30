@@ -56,7 +56,7 @@ function parseText(text) {
   const now = new Date().toISOString();
   const customerMatch = text.match(/([\u4e00-\u9fa5]{1,4})(女士|先生|姐|哥|总)/);
   const customer = customerMatch ? `${customerMatch[1]}${customerMatch[2]}` : "未指定客户";
-  let project = db.projects.find(item => text.includes(item.customer) || text.includes(item.name));
+  let project = findProjectFromText(text, customer);
   if (!project && customer !== "未指定客户") {
     project = {
       id: id(),
@@ -65,8 +65,11 @@ function parseText(text) {
       address: "",
       stage: inferStage(text) || "需求沟通",
       style: "",
-      createdAt: now
+      createdAt: now,
+      stageUpdatedAt: now,
+      updatedAt: now
     };
+    project.nextActionDate = predictProjectNextDate(project);
     db.projects.unshift(project);
   }
 
@@ -110,25 +113,32 @@ function parseText(text) {
       amount: Number(match[1]),
       purpose: inferPurpose(text),
       plannedReturnDate: text.includes("月底") ? "月底" : "",
+      dueDate: normalizeReminderDate(text.includes("月底") ? "月底" : inferDateText(text)),
       status: "待收回",
       note: text,
       createdAt: now
     });
   }
 
-  if (/明天|提醒|修改|整改|复查|确认|收/.test(text)) {
+  if (shouldCreateTask(text)) {
     db.tasks.unshift({
       id: id(),
       projectId: project?.id || "",
       customer,
-      title: text.includes("元") ? "跟进垫付款收回" : text.slice(0, 48),
+      title: inferTaskTitle(text),
       status: "未完成",
-      date: today(),
+      date: normalizeReminderDate(inferDateText(text)) || today(),
+      sourceText: text,
       createdAt: now
     });
   }
 
-  if (project && stage) project.stage = stage;
+  if (project && stage) {
+    project.stage = stage;
+    project.stageUpdatedAt = now;
+    project.nextActionDate = predictProjectNextDate(project);
+    project.updatedAt = now;
+  }
   save();
 }
 
@@ -147,6 +157,39 @@ function inferPurpose(text) {
   return ["灯具定金", "瓷砖样品费", "瓷砖补货", "五金", "材料", "运费"].find(item => text.includes(item)) || "客户垫付款";
 }
 
+function inferDateText(text) {
+  const value = String(text || "");
+  const patterns = [
+    /\d{4}-\d{1,2}-\d{1,2}/,
+    /\d{1,2}\s*月\s*\d{1,2}\s*(号|日)?/,
+    /\d{1,2}\s*(号|日)/,
+    /\d+\s*天后/,
+    /\d*\s*(周|星期|礼拜)后/,
+    /今天|今日|明天|明日|后天|月底|月末/
+  ];
+  return patterns.map(pattern => value.match(pattern)?.[0]).find(Boolean) || "";
+}
+
+function findProjectFromText(text, customer = "") {
+  const value = String(text || "");
+  const projects = visible(db.projects);
+  return projects.find(item => [item.customer, item.name, item.address]
+    .filter(Boolean)
+    .some(key => value.includes(key)))
+    || (customer && customer !== "未指定客户" ? projects.find(item => item.customer === customer) : null);
+}
+
+function shouldCreateTask(text) {
+  return /待办|提醒|需要|要|记得|别忘|明天|明日|后天|跟进|修改|整改|复查|确认|收款|收回|报价|对接/.test(String(text || ""));
+}
+
+function inferTaskTitle(text) {
+  const value = String(text || "").replace(/\s+/g, " ").trim();
+  if (value.includes("元") && /收|报销|垫付/.test(value)) return "跟进垫付款收回";
+  const match = value.match(/(?:提醒我|记得|别忘了?|需要|要|明天|明日|后天)(.{2,70})/);
+  return (match ? match[1] : value).replace(/^[，,。；;：:\s]+/, "").slice(0, 60) || "跟进事项";
+}
+
 function setTab(tab) {
   currentTab = tab;
   $$(".screen").forEach(screen => screen.classList.remove("active"));
@@ -157,6 +200,7 @@ function setTab(tab) {
 
 function render() {
   renderStats();
+  renderReminders();
   renderRecent();
   renderProjects();
   renderMoney();
@@ -183,6 +227,72 @@ function renderRecent() {
   $("#recentFeed").innerHTML = db.logs.slice(0, 5).map(logCard).join("") || empty("还没有记录，先说一句今天做了什么。");
 }
 
+function renderReminders() {
+  if (!$("#todayReminders")) return;
+  const reminders = buildReminders();
+  $("#reminderSummary").textContent = reminders.length ? `${reminders.length} 条要看` : "今天暂时清爽";
+  $("#todayReminders").innerHTML = reminders.slice(0, 8).map(item => `
+    <article class="card reminder-card">
+      <h3>${esc(item.title)}</h3>
+      <p class="meta">${esc(item.detail)}</p>
+      <div class="chips"><span class="chip">${esc(item.type)}</span>${item.date ? `<span class="chip">${esc(item.date)}</span>` : ""}</div>
+    </article>
+  `).join("") || empty("今天没有到期提醒。");
+}
+
+function buildReminders() {
+  const todayDate = today();
+  const next3 = addDays(todayDate, 3);
+  const reminders = [];
+  for (const task of visible(db.tasks).filter(item => item.status !== "已完成")) {
+    const date = normalizeReminderDate(task.dueDate || task.date || "");
+    if (!date || date <= next3) {
+      reminders.push({
+        type: date && date < todayDate ? "逾期待办" : "待办",
+        title: task.title || "待办事项",
+        detail: projectLabel(task.projectId, task.customer || "未指定项目"),
+        date: date || "未设日期",
+        sort: date || todayDate
+      });
+    }
+  }
+  for (const project of visible(db.projects)) {
+    const nextDate = project.nextActionDate || predictProjectNextDate(project);
+    if (nextDate && nextDate <= next3) {
+      const prediction = stagePrediction(project.stage);
+      reminders.push({
+        type: nextDate < todayDate ? "阶段逾期" : "阶段预判",
+        title: `${project.name || project.customer}：${prediction.next || "跟进下一步"}`,
+        detail: `当前阶段：${project.stage || "待补充"}。${prediction.note}`,
+        date: nextDate,
+        sort: nextDate
+      });
+    }
+  }
+  for (const expense of visible(db.expenses).filter(item => item.status !== "已收回")) {
+    const dueDate = normalizeReminderDate(expense.dueDate || expense.plannedReturnDate || "");
+    if (dueDate && dueDate <= next3) {
+      reminders.push({
+        type: dueDate < todayDate ? "逾期待收" : "待收款",
+        title: `${expense.customer || "未指定客户"} 待收 ${money(expense.amount)}`,
+        detail: expense.purpose || "垫付款",
+        date: dueDate,
+        sort: dueDate
+      });
+    }
+  }
+  for (const row of receivableSummary()) {
+    reminders.push({
+      type: "应收统计",
+      title: `${row.customer} 合计待收 ${money(row.total)}`,
+      detail: `${row.count} 笔未收`,
+      date: "",
+      sort: "9999-12-31"
+    });
+  }
+  return reminders.sort((a, b) => a.sort.localeCompare(b.sort));
+}
+
 function renderProjects() {
   const q = ($("#projectSearch")?.value || "").trim();
   const items = visible(db.projects).filter(item => `${item.customer}${item.name}${item.stage}${item.style}`.includes(q));
@@ -190,6 +300,7 @@ function renderProjects() {
     <article class="card">
       <h3>${esc(item.name)}</h3>
       <p class="meta">${esc(item.customer)} · ${esc(item.address || "未填写地址")}</p>
+      <p class="meta">下次提醒：${esc(item.nextActionDate || predictProjectNextDate(item) || "未设置")}</p>
       <div class="chips"><span class="chip">${esc(item.stage || "未设阶段")}</span>${item.style ? `<span class="chip">${esc(item.style)}</span>` : ""}</div>
       <div class="card-actions"><button class="mini-action danger-text" data-delete-type="projects" data-delete-id="${item.id}" data-delete-title="${esc(item.name)}">删除</button></div>
     </article>
@@ -197,14 +308,23 @@ function renderProjects() {
 }
 
 function renderMoney() {
+  const summary = receivableSummary();
   $("#expenseCards").innerHTML = visible(db.expenses).map(item => `
     <article class="card">
       <h3>${money(item.amount)} · ${esc(item.purpose)}</h3>
-      <p class="meta">${esc(item.customer)} · ${esc(item.plannedReturnDate || "未设收回日期")}</p>
+      <p class="meta">${esc(item.customer)} · 计划收回：${esc(item.dueDate || item.plannedReturnDate || "未设收回日期")}</p>
       <div class="chips"><span class="chip">${esc(item.status)}</span></div>
       <div class="card-actions"><button class="mini-action danger-text" data-delete-type="expenses" data-delete-id="${item.id}" data-delete-title="${esc(item.purpose || "垫付款")}">删除</button></div>
     </article>
   `).join("") || empty("暂无垫付款");
+  if (summary.length) {
+    $("#expenseCards").insertAdjacentHTML("afterbegin", `
+      <article class="card">
+        <h3>待收合计：${money(summary.reduce((sum, item) => sum + item.total, 0))}</h3>
+        <p class="meta">${summary.map(item => `${item.customer} ${money(item.total)}`).join("；")}</p>
+      </article>
+    `);
+  }
 }
 
 function renderMiles() {
@@ -346,6 +466,77 @@ function projectLabel(projectId, fallbackCustomer = "") {
   return project ? `${project.customer}-${project.name}` : fallbackCustomer;
 }
 
+function stagePrediction(stage) {
+  const rules = [
+    { keys: ["需求", "沟通"], days: 2, next: "整理需求并约量房", note: "需求沟通后通常 1-2 天内要确认下一步。" },
+    { keys: ["量房"], days: 2, next: "出平面方案", note: "量房后通常 2 天左右要推进平面。" },
+    { keys: ["平面"], days: 3, next: "确认平面并推进效果图", note: "平面方案后通常 3 天左右需要跟进确认。" },
+    { keys: ["效果图"], days: 5, next: "跟进效果图修改/确认", note: "效果图阶段通常 3-5 天要提醒一次。" },
+    { keys: ["施工图"], days: 3, next: "检查施工图并准备报价", note: "施工图阶段通常 3 天左右要核对输出。" },
+    { keys: ["报价"], days: 2, next: "跟进报价确认/收款", note: "报价发出后通常 2 天内要跟进。" },
+    { keys: ["合同"], days: 2, next: "确认合同和付款节点", note: "合同阶段要盯付款和开工资料。" },
+    { keys: ["材料"], days: 3, next: "确认材料清单", note: "材料阶段通常 3 天左右要核对一次。" },
+    { keys: ["水电", "泥瓦", "木工", "油漆", "定制"], days: 3, next: "现场/施工节点跟进", note: "施工阶段建议每 2-3 天跟进一次。" },
+    { keys: ["软装"], days: 4, next: "确认软装清单和到货", note: "软装阶段建议 3-4 天跟进一次。" },
+    { keys: ["验收"], days: 2, next: "安排验收和尾款", note: "验收阶段要提醒收尾款和问题整改。" }
+  ];
+  const text = String(stage || "");
+  return rules.find(rule => rule.keys.some(key => text.includes(key))) || { days: 3, next: "跟进项目进度", note: "未识别具体阶段，默认 3 天后提醒。" };
+}
+
+function predictProjectNextDate(project) {
+  const prediction = stagePrediction(project.stage);
+  const baseDate = String(project.stageUpdatedAt || project.updatedAt || project.createdAt || today()).slice(0, 10);
+  return addDays(normalizeReminderDate(baseDate) || today(), prediction.days);
+}
+
+function receivableSummary() {
+  const map = new Map();
+  for (const item of visible(db.expenses).filter(expense => expense.status !== "已收回")) {
+    const key = item.customer || "未指定客户";
+    const current = map.get(key) || { customer: key, total: 0, count: 0 };
+    current.total += Number(item.amount || 0);
+    current.count += 1;
+    map.set(key, current);
+  }
+  return [...map.values()].filter(item => item.total > 0).sort((a, b) => b.total - a.total);
+}
+
+function normalizeReminderDate(value) {
+  if (!value) return "";
+  const text = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const now = new Date();
+  if (/今天|今日/.test(text)) return today();
+  if (/明天|明日/.test(text)) return addDays(today(), 1);
+  if (/后天/.test(text)) return addDays(today(), 2);
+  const dayAfter = text.match(/(\d+)\s*天后/);
+  if (dayAfter) return addDays(today(), Number(dayAfter[1]));
+  const weekAfter = text.match(/(\d+)?\s*(周|星期|礼拜)后/);
+  if (weekAfter) return addDays(today(), Number(weekAfter[1] || 1) * 7);
+  if (/月底|月末/.test(text)) return monthEnd(now.getFullYear(), now.getMonth());
+  const monthDay = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*(号|日)?/);
+  if (monthDay) return dateFromParts(now.getFullYear(), Number(monthDay[1]), Number(monthDay[2]));
+  const dayOnly = text.match(/(\d{1,2})\s*(号|日)/);
+  if (dayOnly) return dateFromParts(now.getFullYear(), now.getMonth() + 1, Number(dayOnly[1]));
+  return "";
+}
+
+function addDays(date, days) {
+  const parsed = new Date(`${date}T00:00:00`);
+  parsed.setDate(parsed.getDate() + Number(days || 0));
+  return parsed.toISOString().slice(0, 10);
+}
+
+function monthEnd(year, zeroMonth) {
+  return new Date(year, zeroMonth + 1, 0).toISOString().slice(0, 10);
+}
+
+function dateFromParts(year, month, day) {
+  const date = new Date(year, month - 1, day);
+  return date.toISOString().slice(0, 10);
+}
+
 function visible(items) {
   return (items || []).filter(item => !item.deletedAt);
 }
@@ -415,18 +606,22 @@ function submitForm(event) {
       address: form.get("address") || "",
       stage: form.get("stage") || "待补充",
       style: form.get("style") || "",
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      stageUpdatedAt: new Date().toISOString()
     });
+    db.projects[0].nextActionDate = predictProjectNextDate(db.projects[0]);
   }
   if (type === "expense") {
     const project = db.projects.find(p => p.id === form.get("projectId"));
+    const plannedReturnDate = form.get("plannedReturnDate") || "";
     db.expenses.unshift({
       id: id(),
       projectId: project?.id || "",
       customer: project?.customer || "未指定客户",
       amount: Number(form.get("amount") || 0),
       purpose: form.get("purpose") || "待补充用途",
-      plannedReturnDate: form.get("plannedReturnDate") || "",
+      plannedReturnDate,
+      dueDate: normalizeReminderDate(plannedReturnDate),
       status: "待收回",
       date: today(),
       createdAt: new Date().toISOString()
