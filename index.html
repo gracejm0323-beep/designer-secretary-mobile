@@ -236,6 +236,19 @@
       </form>
     </dialog>
 
+    <dialog id="rescheduleDialog">
+      <form method="dialog" class="dialog-card" id="rescheduleForm">
+        <header>
+          <h2>改提醒时间</h2>
+          <button class="round small" type="button" id="rescheduleCloseBtn" aria-label="关闭">×</button>
+        </header>
+        <p class="meta" id="rescheduleSummary">把这条提醒改到新的时间。</p>
+        <input id="rescheduleText" type="text" placeholder="例如：后天9点、今天下午3点、明天上午10点" />
+        <button class="primary wide" type="button" id="rescheduleSaveBtn">保存改期</button>
+        <p class="meta">改期后会自动重新排进今日提醒或未来提醒。</p>
+      </form>
+    </dialog>
+
     <div class="toast" id="toast"></div>
     <script src="./mobile.js"></script>
   </body>

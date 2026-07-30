@@ -20,6 +20,7 @@ let tracker = {
   distance: 0
 };
 let pendingDelete = null;
+let pendingReschedule = null;
 let selectedUploadFile = null;
 
 const $ = selector => document.querySelector(selector);
@@ -607,7 +608,11 @@ function inferTimeLabel(text, date = today()) {
 function inferTime(text, date = today()) {
   const value = String(text || "");
   const explicit = value.match(/([01]?\d|2[0-3])[:：点时](\d{1,2})?/);
-  if (explicit) return `${explicit[1].padStart(2, "0")}:${String(explicit[2] || "00").padStart(2, "0")}`;
+  if (explicit) {
+    let hour = Number(explicit[1]);
+    if (/下午|晚上|今晚|下班/.test(value) && hour < 12) hour += 12;
+    return `${String(hour).padStart(2, "0")}:${String(explicit[2] || "00").padStart(2, "0")}`;
+  }
   const chineseHour = value.match(/([一二三四五六七八九十两]{1,3})点(?:半|(\d{1,2})分?)?/);
   if (chineseHour) {
     const hour = chineseNumberToHour(chineseHour[1], /下午|晚上|今晚|下班/.test(value));
@@ -714,11 +719,12 @@ function renderReminders() {
     <article class="card reminder-card">
       <div class="timeline-row">
         <strong class="timeline-time">${esc(item.time || "待定")}</strong>
+        ${item.action ? `<button class="check-action" data-complete-kind="${esc(item.kind)}" data-complete-id="${esc(item.id)}" aria-label="${esc(item.action)}">✓</button>` : "<span></span>"}
         <div>
           <h3>${esc(item.title)}</h3>
           <p class="meta">${esc(item.detail)}</p>
-          <div class="chips"><span class="chip">${esc(item.type)}</span>${item.date ? `<span class="chip">${esc(item.date)}</span>` : ""}</div>
-          ${item.action ? `<div class="card-actions"><button class="mini-action done-action" data-complete-kind="${esc(item.kind)}" data-complete-id="${esc(item.id)}">${esc(item.action)}</button></div>` : ""}
+          <div class="chips"><span class="chip">${esc(item.action ? `勾选${item.action}` : item.type)}</span>${item.date ? `<span class="chip">${esc(item.date)}</span>` : ""}</div>
+          ${item.action ? `<div class="card-actions"><button class="mini-action reschedule-action" data-reschedule-kind="${esc(item.kind)}" data-reschedule-id="${esc(item.id)}" data-reschedule-title="${esc(item.title)}">改期</button></div>` : ""}
         </div>
       </div>
     </article>
@@ -753,32 +759,34 @@ function buildReminders() {
     const nextDate = project.nextActionDate || predictProjectNextDate(project);
     if (nextDate && nextDate <= next3) {
       const prediction = stagePrediction(project.stage);
+      const nextTime = project.nextActionTime || "09:30";
       reminders.push({
         type: nextDate < todayDate ? "阶段逾期" : "阶段预判",
         title: `${project.name || project.customer}：${prediction.next || "跟进下一步"}`,
         detail: `当前阶段：${project.stage || "待补充"}。${prediction.note}`,
         date: nextDate,
-        time: "09:30",
+        time: nextTime,
         kind: "project",
         id: project.id,
         action: "已跟进",
-        sort: `${nextDate} 09:30`
+        sort: `${nextDate} ${nextTime}`
       });
     }
   }
   for (const expense of visible(db.expenses).filter(item => item.status !== "已收回")) {
     const dueDate = normalizeReminderDate(expense.dueDate || expense.plannedReturnDate || "");
     if (dueDate && dueDate <= next3) {
+      const dueTime = expense.dueTime || "15:00";
       reminders.push({
         type: dueDate < todayDate ? "逾期待收" : "待收款",
         title: `${expense.customer || "未指定客户"} 待收 ${money(expense.amount)}`,
         detail: expense.purpose || "垫付款",
         date: dueDate,
-        time: "15:00",
+        time: dueTime,
         kind: "expense",
         id: expense.id,
         action: "已收回",
-        sort: `${dueDate} 15:00`
+        sort: `${dueDate} ${dueTime}`
       });
     }
   }
@@ -919,10 +927,24 @@ function hydrateReportProjectSelect() {
 }
 
 function buildDailyReport(date) {
-  const logs = visible(db.logs).filter(item => item.date === date && !isAdminReminder(item.text));
-  const tasks = visible(db.tasks).filter(item => item.status !== "已完成" && !isAdminReminder(`${item.title || ""} ${item.sourceText || ""}`) && (item.date === date || item.createdAt?.startsWith(date) || /明天|明日|明早|明晚/.test(item.title || "")));
-  const summary = logs.length ? logs.map(item => formalizeReportText(item.text)).filter(Boolean).join("；") : "暂无";
-  const tomorrow = tasks.length ? tasks.map(item => cleanReportText(item.title)).filter(Boolean).join("；") : "暂无";
+  const tomorrowDate = addDays(date, 1);
+  const summaryItems = uniqueReportItems(visible(db.logs)
+    .filter(item => item.date === date && !isAdminReminder(item.text))
+    .flatMap(item => reportSummaryFragments(item.text))
+    .map(formalizeReportText)
+    .filter(Boolean));
+  const tomorrowItems = uniqueReportItems(visible(db.tasks)
+    .filter(item => item.status !== "已完成")
+    .filter(item => !isAdminReminder(`${item.title || ""} ${item.sourceText || ""}`))
+    .filter(item => {
+      const taskDate = normalizeReminderDate(item.dueDate || item.date || "");
+      const raw = `${item.title || ""} ${item.sourceText || ""}`;
+      return taskDate === tomorrowDate || (/明天|明日|明早|明晚/.test(raw) && item.createdAt?.startsWith(date));
+    })
+    .map(task => projectTaskReportText(task))
+    .filter(Boolean));
+  const summary = summaryItems.length ? summaryItems.join("；") : "暂无";
+  const tomorrow = tomorrowItems.length ? tomorrowItems.join("；") : "暂无";
   return [
     "姓名：缪梦豪",
     `日期：${formatChineseDate(date)}`,
@@ -933,12 +955,44 @@ function buildDailyReport(date) {
 
 function cleanReportText(text) {
   return String(text || "")
+    .replace(/姓名：.*?(?=日期：|今日总结：|明日工作：|$)/g, "")
+    .replace(/日期：.*?(?=今日总结：|明日工作：|$)/g, "")
+    .replace(/今日总结：|明日工作：/g, "；")
     .replace(/^明天跟进：/, "")
     .replace(/^跟进整改\/修改：/, "")
     .replace(/^跟进垫付款收回$/, "")
     .replace(/\s+/g, " ")
     .trim()
     .replace(/[。；;]+$/g, "");
+}
+
+function reportSummaryFragments(text) {
+  const value = String(text || "");
+  const summaryText = /今日总结：/.test(value) ? extractSection(value, "今日总结", "明日工作") : value;
+  return summaryText
+    .split(/[；;\n。]+/)
+    .map(part => cleanReportText(part))
+    .filter(part => part && !isAdminReminder(part) && !/^明日工作/.test(part));
+}
+
+function projectTaskReportText(task) {
+  const title = cleanReportText(task.title || "");
+  if (!title || isAdminReminder(title) || /^(提交)?日报$/.test(title)) return "";
+  const project = visible(db.projects).find(item => item.id === task.projectId);
+  const projectName = project ? projectDisplayName(project) : "";
+  const cleanedTitle = title.replace(projectName, "").replace(/^[，,。；;：:\s]+/, "").trim();
+  if (!cleanedTitle || isAdminReminder(cleanedTitle)) return "";
+  return projectName && !cleanedTitle.includes(projectName) ? `${projectName}${cleanedTitle}` : cleanedTitle;
+}
+
+function uniqueReportItems(items) {
+  const seen = new Set();
+  return items.filter(item => {
+    const key = cleanReportText(item).replace(/\s+/g, "");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function formalizeReportText(text) {
@@ -1820,6 +1874,55 @@ function completeReminder(kind, itemId) {
   render();
 }
 
+function openRescheduleDialog(kind, itemId, title) {
+  pendingReschedule = { kind, itemId };
+  $("#rescheduleSummary").textContent = `改期：${title || "这条提醒"}`;
+  $("#rescheduleText").value = "";
+  $("#rescheduleDialog").showModal();
+  setTimeout(() => $("#rescheduleText").focus(), 50);
+}
+
+function saveReschedule() {
+  if (!pendingReschedule) return;
+  const text = $("#rescheduleText").value.trim();
+  if (!text) return toast("请写新的时间，例如：后天9点");
+  const parsed = parseReminderDateTime(text);
+  const now = new Date().toISOString();
+  if (pendingReschedule.kind === "task") {
+    const task = db.tasks.find(item => item.id === pendingReschedule.itemId);
+    if (!task) return toast("没有找到这条待办");
+    task.date = parsed.date;
+    task.dueDate = parsed.date;
+    task.dueTime = parsed.time;
+    task.rescheduledAt = now;
+    task.rescheduleNote = text;
+    task.updatedAt = now;
+  }
+  if (pendingReschedule.kind === "project") {
+    const project = db.projects.find(item => item.id === pendingReschedule.itemId);
+    if (!project) return toast("没有找到这个项目");
+    project.nextActionDate = parsed.date;
+    project.nextActionTime = parsed.time;
+    project.rescheduledAt = now;
+    project.rescheduleNote = text;
+    project.updatedAt = now;
+  }
+  if (pendingReschedule.kind === "expense") {
+    const expense = db.expenses.find(item => item.id === pendingReschedule.itemId);
+    if (!expense) return toast("没有找到这笔待收");
+    expense.dueDate = parsed.date;
+    expense.plannedReturnDate = parsed.date;
+    expense.dueTime = parsed.time;
+    expense.rescheduledAt = now;
+    expense.rescheduleNote = text;
+    expense.updatedAt = now;
+  }
+  save();
+  $("#rescheduleDialog").close();
+  render();
+  toast(`已改到 ${parsed.date} ${parsed.time}`);
+}
+
 async function githubRequest(path, options = {}) {
   const response = await fetch(`https://api.github.com${path}`, {
     ...options,
@@ -2031,6 +2134,11 @@ document.addEventListener("click", event => {
     completeReminder(completeButton.dataset.completeKind, completeButton.dataset.completeId);
     return;
   }
+  const rescheduleButton = event.target.closest("[data-reschedule-kind]");
+  if (rescheduleButton) {
+    openRescheduleDialog(rescheduleButton.dataset.rescheduleKind, rescheduleButton.dataset.rescheduleId, rescheduleButton.dataset.rescheduleTitle);
+    return;
+  }
   const button = event.target.closest("[data-delete-type]");
   if (!button) return;
   openDeleteDialog(button.dataset.deleteType, button.dataset.deleteId, button.dataset.deleteTitle);
@@ -2039,6 +2147,14 @@ $("#deleteCloseBtn").addEventListener("click", () => $("#deleteDialog").close())
 $("#deleteLocalBtn").addEventListener("click", deleteCurrentDevice);
 $("#deleteSyncBtn").addEventListener("click", deleteEverywhere);
 $("#deleteGithubBtn").addEventListener("click", deleteGithubFile);
+$("#rescheduleCloseBtn").addEventListener("click", () => $("#rescheduleDialog").close());
+$("#rescheduleSaveBtn").addEventListener("click", saveReschedule);
+$("#rescheduleText").addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    saveReschedule();
+  }
+});
 $("#reportProjectSelect").addEventListener("change", renderReports);
 $("#copyDailyBtn").addEventListener("click", () => copyText($("#dailyReport").textContent, "日报"));
 $("#copyProjectReportBtn").addEventListener("click", () => copyText($("#projectReport").textContent, "项目进度报告"));
