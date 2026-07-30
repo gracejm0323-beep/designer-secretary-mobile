@@ -356,6 +356,11 @@ select:focus {
   background: #fff4ef;
 }
 
+.mini-action.done-action {
+  color: white;
+  background: var(--green);
+}
+
 .toolbar {
   margin-bottom: 12px;
 }

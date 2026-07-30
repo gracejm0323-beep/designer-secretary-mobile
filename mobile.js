@@ -718,6 +718,7 @@ function renderReminders() {
           <h3>${esc(item.title)}</h3>
           <p class="meta">${esc(item.detail)}</p>
           <div class="chips"><span class="chip">${esc(item.type)}</span>${item.date ? `<span class="chip">${esc(item.date)}</span>` : ""}</div>
+          ${item.action ? `<div class="card-actions"><button class="mini-action done-action" data-complete-kind="${esc(item.kind)}" data-complete-id="${esc(item.id)}">${esc(item.action)}</button></div>` : ""}
         </div>
       </div>
     </article>
@@ -741,6 +742,9 @@ function buildReminders() {
         detail: [projectLabel(task.projectId, task.customer || "未指定项目"), timeLabel].filter(Boolean).join(" · "),
         date: date || "未设日期",
         time: time || sortTimeFromLabel(timeLabel),
+        kind: "task",
+        id: task.id,
+        action: "完成",
         sort: dueAt
       });
     }
@@ -755,6 +759,9 @@ function buildReminders() {
         detail: `当前阶段：${project.stage || "待补充"}。${prediction.note}`,
         date: nextDate,
         time: "09:30",
+        kind: "project",
+        id: project.id,
+        action: "已跟进",
         sort: `${nextDate} 09:30`
       });
     }
@@ -768,6 +775,9 @@ function buildReminders() {
         detail: expense.purpose || "垫付款",
         date: dueDate,
         time: "15:00",
+        kind: "expense",
+        id: expense.id,
+        action: "已收回",
         sort: `${dueDate} 15:00`
       });
     }
@@ -1780,6 +1790,36 @@ async function deleteGithubFile() {
   }
 }
 
+function completeReminder(kind, itemId) {
+  const now = new Date().toISOString();
+  if (kind === "task") {
+    const task = db.tasks.find(item => item.id === itemId);
+    if (!task) return;
+    task.status = "已完成";
+    task.completedAt = now;
+    task.updatedAt = now;
+    toast("已完成");
+  }
+  if (kind === "project") {
+    const project = db.projects.find(item => item.id === itemId);
+    if (!project) return;
+    project.lastFollowedAt = now;
+    project.nextActionDate = addDays(today(), stagePrediction(project.stage).days);
+    project.updatedAt = now;
+    toast("已记录跟进，下次提醒已后移");
+  }
+  if (kind === "expense") {
+    const expense = db.expenses.find(item => item.id === itemId);
+    if (!expense) return;
+    expense.status = "已收回";
+    expense.receivedAt = now;
+    expense.updatedAt = now;
+    toast("已标记收回");
+  }
+  save();
+  render();
+}
+
 async function githubRequest(path, options = {}) {
   const response = await fetch(`https://api.github.com${path}`, {
     ...options,
@@ -1986,6 +2026,11 @@ $("#backupToGithubBtn").addEventListener("click", backupToGithub);
 $("#loadGithubBackupsBtn").addEventListener("click", loadGithubBackups);
 $("#restoreGithubBackupBtn").addEventListener("click", restoreGithubBackup);
 document.addEventListener("click", event => {
+  const completeButton = event.target.closest("[data-complete-kind]");
+  if (completeButton) {
+    completeReminder(completeButton.dataset.completeKind, completeButton.dataset.completeId);
+    return;
+  }
   const button = event.target.closest("[data-delete-type]");
   if (!button) return;
   openDeleteDialog(button.dataset.deleteType, button.dataset.deleteId, button.dataset.deleteTitle);
