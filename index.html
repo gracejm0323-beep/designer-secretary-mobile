@@ -84,11 +84,22 @@
       </section>
 
       <section class="screen" id="filesScreen">
-        <div class="toolbar">
+        <div class="quick-card">
           <label class="primary wide file-pick">
-            拍照/上传文件
-            <input id="fileInput" type="file" accept="image/*,.pdf" capture="environment" />
+            选择照片/文件
+            <input id="fileInput" type="file" accept="image/*,.pdf,.dwg,.dxf,.doc,.docx,.xls,.xlsx,.zip" capture="environment" />
           </label>
+          <p class="meta" id="selectedFileName">还没有选择文件。</p>
+          <select id="fileProjectSelect"></select>
+          <input id="fileSpace" type="text" placeholder="空间，例如：厨房 / 客厅 / 现场" />
+          <input id="fileType" type="text" placeholder="类型，例如：施工图 / 效果图 / 现场照片" />
+          <input id="fileVersion" type="text" placeholder="版本，例如：V1 / V2 / 最新版" />
+          <textarea id="fileNote" rows="2" placeholder="备注，例如：客户已确认 / 作废旧版 / 需要修改"></textarea>
+          <div class="quick-actions">
+            <button class="ghost" id="saveLocalFileBtn">保存到本机</button>
+            <button class="primary" id="uploadGithubFileBtn">上传到 GitHub</button>
+          </div>
+          <p class="meta" id="fileUploadStatus">小文件可以上传到 GitHub 仓库；大视频和大量高清图不建议放 GitHub。</p>
         </div>
         <div class="cards file-grid" id="fileCards"></div>
       </section>
@@ -118,6 +129,16 @@
           </div>
           <button class="primary wide" id="mergeSyncBtn">智能同步</button>
           <p class="meta" id="syncStatus">Token 只保存在当前浏览器里。同步内容不包含照片原图，避免文件太大。</p>
+        </div>
+
+        <div class="quick-card">
+          <label>GitHub 文件库设置</label>
+          <input id="repoOwner" type="text" placeholder="GitHub 用户名，例如：gracejm0323-beep" autocomplete="off" />
+          <input id="repoName" type="text" placeholder="仓库名，例如：designer-secretary-mobile" autocomplete="off" />
+          <input id="repoBranch" type="text" placeholder="分支，例如：main" autocomplete="off" />
+          <input id="repoFolder" type="text" placeholder="文件目录，例如：files" autocomplete="off" />
+          <button class="primary wide" id="saveRepoSettingsBtn">保存文件库设置</button>
+          <p class="meta">Token 需要这个仓库的 Contents: Read and write 权限。公开仓库里的文件知道链接的人可能能看到。</p>
         </div>
       </section>
 

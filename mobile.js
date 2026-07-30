@@ -20,6 +20,7 @@ let tracker = {
   distance: 0
 };
 let pendingDelete = null;
+let selectedUploadFile = null;
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -221,15 +222,29 @@ function renderMiles() {
 }
 
 function renderFiles() {
+  hydrateFileProjectSelect();
   $("#fileCards").innerHTML = visible(db.files).map(file => `
     <article class="card">
-      <div class="thumb">${file.dataUrl?.startsWith("data:image") ? `<img src="${file.dataUrl}" alt="${esc(file.name)}">` : "文件"}</div>
+      <div class="thumb">${file.dataUrl?.startsWith("data:image") ? `<img src="${file.dataUrl}" alt="${esc(file.name)}">` : file.url && /\.(png|jpe?g|webp|gif)$/i.test(file.url) ? `<img src="${esc(file.url)}" alt="${esc(file.name)}">` : "文件"}</div>
       <h3>${esc(file.name)}</h3>
       <p class="meta">${esc(file.customer || "未指定客户")} · ${esc(file.date)}</p>
+      <p class="meta">${esc(file.space || "未设空间")} · ${esc(file.fileType || file.type || "未设类型")} · ${esc(file.version || "未设版本")}</p>
       ${file.url ? `<p class="meta"><a href="${esc(file.url)}" target="_blank" rel="noopener">打开文件</a></p>` : ""}
+      ${file.githubPath ? `<p class="meta">GitHub：${esc(file.githubPath)}</p>` : ""}
       <div class="card-actions"><button class="mini-action danger-text" data-delete-type="files" data-delete-id="${file.id}" data-delete-title="${esc(file.name)}">删除</button></div>
     </article>
   `).join("") || empty("还没有照片或文件");
+}
+
+function hydrateFileProjectSelect() {
+  const select = $("#fileProjectSelect");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = [
+    `<option value="">未指定项目</option>`,
+    ...visible(db.projects).map(project => `<option value="${project.id}">${esc(project.customer)} - ${esc(project.name)}</option>`)
+  ].join("");
+  select.value = current;
 }
 
 function renderLogs() {
@@ -519,21 +534,146 @@ function importData(file) {
 
 function handleFile(file) {
   if (!file) return;
+  selectedUploadFile = file;
+  $("#selectedFileName").textContent = `${file.name} · ${formatFileSize(file.size)}`;
+  $("#fileUploadStatus").textContent = "已选择文件，可以保存到本机或上传到 GitHub。";
+}
+
+function fileMetaFromForm(file) {
+  const project = visible(db.projects).find(item => item.id === $("#fileProjectSelect").value);
+  return {
+    projectId: project?.id || "",
+    customer: project?.customer || "未指定客户",
+    projectName: project?.name || "未指定项目",
+    space: $("#fileSpace").value.trim() || "未设空间",
+    fileType: $("#fileType").value.trim() || guessFileType(file),
+    version: $("#fileVersion").value.trim() || "未设版本",
+    note: $("#fileNote").value.trim()
+  };
+}
+
+function saveLocalSelectedFile() {
+  const file = selectedUploadFile;
+  if (!file) return toast("请先选择文件");
   const reader = new FileReader();
   reader.onload = () => {
+    const meta = fileMetaFromForm(file);
     db.files.unshift({
       id: id(),
       name: file.name,
       type: file.type,
+      ...meta,
       dataUrl: reader.result,
       date: today(),
       createdAt: new Date().toISOString()
     });
     save();
     render();
-    toast("照片/文件已保存");
+    clearFileForm();
+    toast("已保存到当前设备");
   };
   reader.readAsDataURL(file);
+}
+
+async function uploadSelectedFileToGithub() {
+  const file = selectedUploadFile;
+  if (!file) return toast("请先选择文件");
+  if (file.size > 25 * 1024 * 1024 && !confirm("这个文件超过 25MB，不建议放 GitHub。仍然上传吗？")) return;
+  try {
+    readSyncSettingsFromForm();
+    readRepoSettingsFromForm();
+    $("#fileUploadStatus").textContent = "正在上传到 GitHub 仓库...";
+    const dataUrl = await readFileAsDataUrl(file);
+    const base64 = String(dataUrl).split(",")[1] || "";
+    const meta = fileMetaFromForm(file);
+    const githubPath = buildGithubFilePath(file, meta);
+    const encodedPath = githubPath.split("/").map(encodeURIComponent).join("/");
+    const result = await githubRequest(`/repos/${syncSettings.repoOwner}/${syncSettings.repoName}/contents/${encodedPath}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        message: `upload ${githubPath}`,
+        content: base64,
+        branch: syncSettings.repoBranch || "main"
+      })
+    });
+    const fileUrl = githubPagesFileUrl(githubPath);
+    db.files.unshift({
+      id: id(),
+      name: file.name,
+      type: file.type,
+      ...meta,
+      dataUrl: dataUrl.startsWith("data:image") && dataUrl.length < 120000 ? dataUrl : "",
+      url: fileUrl,
+      githubOwner: syncSettings.repoOwner,
+      githubRepo: syncSettings.repoName,
+      githubBranch: syncSettings.repoBranch || "main",
+      githubPath,
+      githubSha: result.content?.sha || "",
+      date: today(),
+      createdAt: new Date().toISOString()
+    });
+    save();
+    render();
+    clearFileForm();
+    $("#fileUploadStatus").textContent = "已上传到 GitHub，并生成文件链接。";
+    toast("已上传到 GitHub");
+  } catch (error) {
+    $("#fileUploadStatus").textContent = error.message;
+    toast(error.message);
+  }
+}
+
+function clearFileForm() {
+  selectedUploadFile = null;
+  $("#fileInput").value = "";
+  $("#selectedFileName").textContent = "还没有选择文件。";
+  $("#fileSpace").value = "";
+  $("#fileType").value = "";
+  $("#fileVersion").value = "";
+  $("#fileNote").value = "";
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatFileSize(size) {
+  if (size > 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)}MB`;
+  return `${Math.max(1, Math.round(size / 1024))}KB`;
+}
+
+function guessFileType(file) {
+  if (file.type?.startsWith("image/")) return "现场照片";
+  if (/\.pdf$/i.test(file.name)) return "PDF";
+  if (/\.(dwg|dxf)$/i.test(file.name)) return "施工图";
+  if (/\.(docx?|xlsx?)$/i.test(file.name)) return "文档";
+  return "文件";
+}
+
+function buildGithubFilePath(file, meta) {
+  const folder = sanitizePathPart(syncSettings.repoFolder || "files");
+  const project = sanitizePathPart(meta.projectName || meta.customer || "未指定项目");
+  const space = sanitizePathPart(meta.space || "未设空间");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const name = sanitizeFileName(file.name);
+  return `${folder}/${project}/${space}/${stamp}-${name}`;
+}
+
+function sanitizePathPart(value) {
+  return String(value || "未命名").trim().replace(/[\\/:*?"<>|#%{}^~[\]`]/g, "-").replace(/\s+/g, "-").slice(0, 80) || "未命名";
+}
+
+function sanitizeFileName(value) {
+  return String(value || "file").trim().replace(/[\\/:*?"<>|#%{}^~[\]`]/g, "-").replace(/\s+/g, "-").slice(0, 120) || "file";
+}
+
+function githubPagesFileUrl(path) {
+  return `https://${syncSettings.repoOwner}.github.io/${syncSettings.repoName}/${path.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 function startTracking() {
@@ -645,9 +785,19 @@ function toast(text) {
 function renderSyncSettings() {
   const token = $("#syncToken");
   const gist = $("#syncGistId");
-  if (!token || document.activeElement === token || document.activeElement === gist) return;
-  token.value = syncSettings.token || "";
-  gist.value = syncSettings.gistId || "";
+  const owner = $("#repoOwner");
+  const repo = $("#repoName");
+  const branch = $("#repoBranch");
+  const folder = $("#repoFolder");
+  if (!token) return;
+  if (![token, gist, owner, repo, branch, folder].includes(document.activeElement)) {
+    token.value = syncSettings.token || "";
+    gist.value = syncSettings.gistId || "";
+    owner.value = syncSettings.repoOwner || "gracejm0323-beep";
+    repo.value = syncSettings.repoName || "designer-secretary-mobile";
+    branch.value = syncSettings.repoBranch || "main";
+    folder.value = syncSettings.repoFolder || "files";
+  }
 }
 
 function readSyncSettingsFromForm() {
@@ -655,6 +805,24 @@ function readSyncSettingsFromForm() {
   syncSettings.gistId = $("#syncGistId").value.trim();
   saveSyncSettings();
   if (!syncSettings.token) throw new Error("请先填写 GitHub Token");
+}
+
+function readRepoSettingsFromForm() {
+  syncSettings.repoOwner = $("#repoOwner").value.trim() || "gracejm0323-beep";
+  syncSettings.repoName = $("#repoName").value.trim() || "designer-secretary-mobile";
+  syncSettings.repoBranch = $("#repoBranch").value.trim() || "main";
+  syncSettings.repoFolder = $("#repoFolder").value.trim() || "files";
+  saveSyncSettings();
+  if (!syncSettings.repoOwner || !syncSettings.repoName) throw new Error("请填写 GitHub 用户名和仓库名");
+}
+
+function saveRepoSettings() {
+  try {
+    readRepoSettingsFromForm();
+    toast("文件库设置已保存");
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 function syncPayload() {
@@ -764,8 +932,9 @@ async function deleteGithubFile() {
   if (!item || !item.githubPath || !item.githubSha) return toast("这条记录没有可删除的 GitHub 仓库文件");
   try {
     readSyncSettingsFromForm();
+    readRepoSettingsFromForm();
     const encodedPath = item.githubPath.split("/").map(encodeURIComponent).join("/");
-    await githubRequest(`/repos/${item.githubOwner}/${item.githubRepo}/contents/${encodedPath}`, {
+    await githubRequest(`/repos/${item.githubOwner || syncSettings.repoOwner}/${item.githubRepo || syncSettings.repoName}/contents/${encodedPath}`, {
       method: "DELETE",
       body: JSON.stringify({
         message: `delete ${item.githubPath}`,
@@ -892,6 +1061,8 @@ $("#dialogForm").addEventListener("submit", submitForm);
 $("#dialogCloseBtn").addEventListener("click", () => $("#formDialog").close());
 $("#projectSearch").addEventListener("input", renderProjects);
 $("#fileInput").addEventListener("change", event => handleFile(event.target.files[0]));
+$("#saveLocalFileBtn").addEventListener("click", saveLocalSelectedFile);
+$("#uploadGithubFileBtn").addEventListener("click", uploadSelectedFileToGithub);
 $("#exportBtn").addEventListener("click", exportData);
 $("#exportBtn2").addEventListener("click", exportData);
 $("#importBtn").addEventListener("click", () => $("#importInput").click());
@@ -899,6 +1070,7 @@ $("#importInput").addEventListener("change", event => importData(event.target.fi
 $("#pushSyncBtn").addEventListener("click", pushSync);
 $("#pullSyncBtn").addEventListener("click", () => pullSync({ merge: true }));
 $("#mergeSyncBtn").addEventListener("click", mergeSync);
+$("#saveRepoSettingsBtn").addEventListener("click", saveRepoSettings);
 document.addEventListener("click", event => {
   const button = event.target.closest("[data-delete-type]");
   if (!button) return;
