@@ -30,13 +30,16 @@ const money = value => `¥${Number(value || 0).toLocaleString("zh-CN")}`;
 
 function load() {
   try {
-    return repairLoadedData({ ...base, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") });
+    const repaired = repairLoadedData({ ...base, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(repaired));
+    return repaired;
   } catch {
     return structuredClone(base);
   }
 }
 
 function save() {
+  db = repairLoadedData(db);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
 }
 
@@ -54,24 +57,12 @@ function saveSyncSettings() {
 
 function parseText(text) {
   const now = new Date().toISOString();
+  const projectMentions = extractProjectMentions(text);
+  if (projectMentions.length > 1) return parseMultiProjectText(text, projectMentions, now);
   const customer = inferCustomer(text);
-  let project = findProjectFromText(text, customer);
+  let project = findProjectFromText(text, customer, projectMentions[0]?.name || "");
   const result = { project: "", task: "", mileage: "", expense: "", stage: "" };
-  if (!project && customer !== "未指定客户") {
-    project = {
-      id: id(),
-      customer,
-      name: `${customer}住宅项目`,
-      address: "",
-      stage: inferStage(text) || "需求沟通",
-      style: "",
-      createdAt: now,
-      stageUpdatedAt: now,
-      updatedAt: now
-    };
-    project.nextActionDate = predictProjectNextDate(project);
-    db.projects.unshift(project);
-  }
+  if (!project && (customer !== "未指定客户" || projectMentions[0])) project = ensureProject(customer, projectMentions[0]?.name || "", text, now);
   if (project) result.project = project.name || project.customer;
 
   const stage = inferStage(text);
@@ -174,27 +165,112 @@ function inferCustomer(text) {
 }
 
 function cleanCustomerName(value) {
-  return String(value || "")
-    .replace(/^(今天|今日|昨天|昨日|明天|明日|上午|下午|晚上|早上|中午)/, "")
-    .replace(/^(去|到|去了|对接|跟进|拜访|联系)/, "")
-    .trim();
+  return cleanNamePrefix(value).replace(/住宅项目$|项目$/g, "").trim();
 }
 
 function repairLoadedData(value) {
   const copy = { ...base, ...value };
   copy.projects = (copy.projects || []).map(project => {
     const customer = cleanCustomerName(project.customer || "");
-    const name = String(project.name || "");
-    const cleanedName = name
-      .replace(/^(今天|今日|昨天|昨日|明天|明日|上午|下午|晚上|早上|中午)/, "")
-      .replace(/^(去|到|去了|对接|跟进|拜访|联系)/, "");
+    const cleanedName = cleanProjectName(project.name || "", customer);
+    const addressParts = inferAddressParts(`${cleanedName} ${project.address || ""}`);
     return {
       ...project,
       customer: customer || project.customer,
-      name: cleanedName || project.name
+      name: cleanedName || project.name,
+      community: project.community || addressParts.community,
+      unitNo: project.unitNo || addressParts.unitNo,
+      deadline: normalizeReminderDate(project.deadline || "")
     };
   });
+  for (const key of ["logs", "tasks", "expenses", "mileage", "files"]) {
+    copy[key] = (copy[key] || []).map(item => ({
+      ...item,
+      customer: cleanCustomerName(item.customer || "") || item.customer,
+      projectName: item.projectName ? cleanProjectName(item.projectName, item.customer) : item.projectName
+    }));
+  }
+  splitLegacyMultiProjectTasks(copy);
   return copy;
+}
+
+function splitLegacyMultiProjectTasks(copy) {
+  const additions = [];
+  for (const task of copy.tasks || []) {
+    if (task.deletedAt) continue;
+    const mentions = extractProjectMentions(`${task.title || ""} ${task.sourceText || ""}`);
+    if (mentions.length < 2) continue;
+    const deletedAt = new Date().toISOString();
+    task.deletedAt = deletedAt;
+    task.updatedAt = deletedAt;
+    for (const mention of mentions) {
+      let project = (copy.projects || []).find(item => item.name === mention.name);
+      if (!project) {
+        project = {
+          id: id(),
+          customer: "未指定客户",
+          name: mention.name,
+          address: "",
+          stage: "需求沟通",
+          style: "",
+          createdAt: task.createdAt || deletedAt,
+          stageUpdatedAt: task.createdAt || deletedAt,
+          updatedAt: deletedAt
+        };
+        project.nextActionDate = predictProjectNextDate(project);
+        copy.projects.unshift(project);
+      }
+      const source = extractSegmentForProject(task.title || task.sourceText || "", mention.name);
+      additions.push({
+        ...task,
+        id: id(),
+        projectId: project.id,
+        customer: project.customer,
+        title: inferProjectTaskTitle(source, mention.name),
+        sourceText: source,
+        deletedAt: "",
+        updatedAt: deletedAt
+      });
+    }
+  }
+  if (additions.length) copy.tasks = [...additions, ...(copy.tasks || [])];
+}
+
+function cleanNamePrefix(value) {
+  let text = String(value || "").trim();
+  let previous = "";
+  while (text && text !== previous) {
+    previous = text;
+    text = text
+      .replace(/^(今天|今日|昨天|昨日|明天|明日|上午|下午|晚上|早上|中午|刚刚|现在)/, "")
+      .replace(/^(去|到|去了|来到|前往|对接|跟进|拜访|联系|约了|见了|跑了)/, "")
+      .replace(/^(.{0,3}?)(去|到)(?=[\u4e00-\u9fa5]{1,3}(女士|先生|姐|哥|总))/, "")
+      .trim();
+  }
+  return text;
+}
+
+function cleanProjectName(name, customer = "") {
+  let text = cleanNamePrefix(name);
+  const cleanedCustomer = cleanCustomerName(customer);
+  const customerHit = text.match(/([\u4e00-\u9fa5]{1,3})(女士|先生|姐|哥|总)/);
+  if (customerHit && /^.*?(今天|今日|去|到|去了)/.test(text)) {
+    text = `${customerHit[1]}${customerHit[2]}${text.slice(customerHit.index + customerHit[0].length)}`;
+  }
+  if (cleanedCustomer && !text.includes(cleanedCustomer) && /住宅项目|项目/.test(text)) {
+    text = `${cleanedCustomer}住宅项目`;
+  }
+  return text || (cleanedCustomer ? `${cleanedCustomer}住宅项目` : "");
+}
+
+function inferAddressParts(text) {
+  const value = String(text || "");
+  const match = value.match(/([\u4e00-\u9fa5A-Za-z]{2,12})\s*(\d{1,2}[-－]\d{3,4})/);
+  if (!match) return { community: "", unitNo: "" };
+  return {
+    community: match[1].replace(/^(今天|今日|去|到|去了)/, ""),
+    unitNo: match[2].replace("－", "-")
+  };
 }
 
 function inferDateText(text) {
@@ -211,12 +287,110 @@ function inferDateText(text) {
   return patterns.map(pattern => value.match(pattern)?.[0]).find(Boolean) || "";
 }
 
-function findProjectFromText(text, customer = "") {
+function inferDeadlineText(text) {
+  const value = String(text || "");
+  const match = value.match(/(?:交期|交付|交图|提交|出图|完成|截止|最晚|月底|月末)[^\d一二三四五六日天周星期礼拜]*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\s*月\s*\d{1,2}\s*(?:号|日)?|\d{1,2}\s*(?:号|日)|下周[一二三四五六日天]|周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天]|月底|月末|明天|明日|后天)?/);
+  return match?.[1] || (/月底|月末/.test(value) ? "月底" : "");
+}
+
+function parseMultiProjectText(text, mentions, now = new Date().toISOString()) {
+  const reminder = parseReminderDateTime(text);
+  const result = { project: "", task: "", mileage: "", expense: "", stage: "" };
+  const handled = [];
+  for (const mention of mentions) {
+    const sentence = extractSegmentForProject(text, mention.name);
+    const project = ensureProject("未指定客户", mention.name, sentence, now);
+    const stage = inferStage(sentence);
+    const title = inferProjectTaskTitle(sentence, mention.name);
+    db.logs.unshift({
+      id: id(),
+      projectId: project.id,
+      customer: project.customer,
+      text: sentence,
+      stage,
+      space: inferSpace(sentence),
+      date: today(),
+      createdAt: now
+    });
+    db.tasks.unshift({
+      id: id(),
+      projectId: project.id,
+      customer: project.customer,
+      title,
+      status: "未完成",
+      date: reminder.date,
+      dueDate: reminder.date,
+      dueTime: reminder.time,
+      sourceText: sentence,
+      createdAt: now
+    });
+    if (stage) {
+      project.stage = stage;
+      project.stageUpdatedAt = now;
+      project.nextActionDate = predictProjectNextDate(project);
+      project.updatedAt = now;
+    }
+    handled.push(`${project.name}：${title}`);
+  }
+  save();
+  result.project = mentions.map(item => item.name).join("、");
+  result.task = handled.join("；");
+  return result;
+}
+
+function ensureProject(customer, projectName, text = "", now = new Date().toISOString()) {
+  const cleanProject = cleanProjectName(projectName || "", customer);
+  const addressParts = inferAddressParts(`${cleanProject} ${text}`);
+  const cleanCustomer = customer !== "未指定客户" ? cleanCustomerName(customer) : inferCustomer(text);
+  let project = findProjectFromText(text, cleanCustomer, cleanProject);
+  if (project) return project;
+  const name = cleanProject || (cleanCustomer !== "未指定客户" ? `${cleanCustomer}住宅项目` : "临时项目");
+  project = {
+    id: id(),
+    customer: cleanCustomer || "未指定客户",
+    name,
+    community: addressParts.community,
+    unitNo: addressParts.unitNo,
+    address: [addressParts.community, addressParts.unitNo].filter(Boolean).join(" "),
+    deadline: normalizeReminderDate(inferDeadlineText(text)),
+    stage: inferStage(text) || "需求沟通",
+    style: "",
+    createdAt: now,
+    stageUpdatedAt: now,
+    updatedAt: now
+  };
+  project.nextActionDate = predictProjectNextDate(project);
+  db.projects.unshift(project);
+  return project;
+}
+
+function extractProjectMentions(text) {
+  const value = String(text || "");
+  const pattern = /([\u4e00-\u9fa5A-Za-z]{2,12}\s*\d{1,2}[-－]\d{3,4})/g;
+  return [...new Set([...value.matchAll(pattern)].map(match => match[1].replace(/\s+/g, "")))]
+    .map(name => ({ name }));
+}
+
+function extractSegmentForProject(text, projectName) {
+  const value = String(text || "");
+  const start = value.indexOf(projectName);
+  if (start < 0) return value;
+  const next = value.slice(start + projectName.length).search(/[；;。]/);
+  return next >= 0 ? value.slice(start, start + projectName.length + next) : value.slice(start);
+}
+
+function inferProjectTaskTitle(text, projectName = "") {
+  let value = String(text || "").replace(projectName, "").replace(/^[，,。；;：:\s]+/, "").trim();
+  value = value.replace(/^(方案|报价|效果图|硬装|模型|施工图)?/, match => match || "");
+  return polishTaskTitle(value || `${projectName}项目跟进`);
+}
+
+function findProjectFromText(text, customer = "", projectName = "") {
   const value = String(text || "");
   const projects = visible(db.projects);
-  return projects.find(item => [item.customer, item.name, item.address]
+  return projects.find(item => [projectName, item.customer, item.name, item.address]
     .filter(Boolean)
-    .some(key => value.includes(key)))
+    .some(key => value.includes(key) || item.name === key))
     || (customer && customer !== "未指定客户" ? projects.find(item => item.customer === customer) : null);
 }
 
@@ -234,6 +408,7 @@ function inferTaskTitle(text) {
 function polishTaskTitle(text) {
   let value = String(text || "")
     .replace(/^(前|后|之前|以后)/, "")
+    .replace(/项目对接$/, "项目对接")
     .replace(/^(交|提交)(日报|日总结|每日总结)$/, "提交日报")
     .replace(/^日报$/, "提交日报")
     .replace(/报价$/, "跟进报价确认")
@@ -242,6 +417,7 @@ function polishTaskTitle(text) {
     .trim();
   if (/日报/.test(value) && !/^提交/.test(value)) value = "提交日报";
   if (/收款|收回|要钱/.test(value)) value = "跟进款项收回";
+  if (/方案修改|报价修改|硬装修改|效果图修改/.test(value)) value = value.replace(/、/g, "，");
   return value.slice(0, 60) || "跟进事项";
 }
 
@@ -445,17 +621,43 @@ function buildReminders() {
 }
 
 function renderProjects() {
+  hydrateCommunityFilter();
   const q = ($("#projectSearch")?.value || "").trim();
-  const items = visible(db.projects).filter(item => `${item.customer}${item.name}${item.stage}${item.style}`.includes(q));
+  const community = $("#communityFilter")?.value || "";
+  const deadline = $("#deadlineFilter")?.value || "";
+  const items = visible(db.projects)
+    .filter(item => `${item.community}${item.unitNo}${item.customer}${item.name}${item.stage}${item.style}${item.address}`.includes(q))
+    .filter(item => !community || item.community === community)
+    .filter(item => matchDeadlineFilter(item.deadline, deadline));
   $("#projectCards").innerHTML = items.map(item => `
     <article class="card">
       <h3>${esc(item.name)}</h3>
-      <p class="meta">${esc(item.customer)} · ${esc(item.address || "未填写地址")}</p>
-      <p class="meta">下次提醒：${esc(item.nextActionDate || predictProjectNextDate(item) || "未设置")}</p>
+      <p class="meta">${esc(item.community || "未填小区")} · ${esc(item.unitNo || "未填门牌")} · ${esc(item.customer || "未指定客户")}</p>
+      <p class="meta">交期：${esc(item.deadline || "未设置")} · 下次提醒：${esc(item.nextActionDate || predictProjectNextDate(item) || "未设置")}</p>
       <div class="chips"><span class="chip">${esc(item.stage || "未设阶段")}</span>${item.style ? `<span class="chip">${esc(item.style)}</span>` : ""}</div>
       <div class="card-actions"><button class="mini-action danger-text" data-delete-type="projects" data-delete-id="${item.id}" data-delete-title="${esc(item.name)}">删除</button></div>
     </article>
   `).join("") || empty("还没有项目");
+}
+
+function hydrateCommunityFilter() {
+  const select = $("#communityFilter");
+  if (!select) return;
+  const current = select.value;
+  const communities = [...new Set(visible(db.projects).map(item => item.community).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+  select.innerHTML = [`<option value="">全部小区</option>`, ...communities.map(item => `<option value="${esc(item)}">${esc(item)}</option>`)].join("");
+  select.value = communities.includes(current) ? current : "";
+}
+
+function matchDeadlineFilter(deadline, mode) {
+  if (!mode) return true;
+  const date = normalizeReminderDate(deadline || "");
+  if (mode === "none") return !date;
+  if (!date) return false;
+  if (mode === "overdue") return date < today();
+  if (mode === "today") return date === today();
+  if (mode === "week") return date >= today() && date <= addDays(today(), 7);
+  return true;
 }
 
 function renderMoney() {
@@ -628,7 +830,11 @@ function buildMileageReport() {
 
 function projectLabel(projectId, fallbackCustomer = "") {
   const project = visible(db.projects).find(item => item.id === projectId);
-  return project ? `${project.customer}-${project.name}` : fallbackCustomer;
+  return project ? projectDisplayName(project) : fallbackCustomer;
+}
+
+function projectDisplayName(project) {
+  return [project.community, project.unitNo].filter(Boolean).join("") || project.name || project.customer || "未指定项目";
 }
 
 function stagePrediction(stage) {
@@ -740,12 +946,15 @@ function empty(text) {
 function openForm(type) {
   const dialog = $("#formDialog");
   $("#dialogTitle").textContent = { project: "新建项目", expense: "记录垫付款", mileage: "记录里程" }[type];
-  const projectOptions = visible(db.projects).map(p => `<option value="${p.id}">${esc(p.customer)} - ${esc(p.name)}</option>`).join("");
+  const projectOptions = visible(db.projects).map(p => `<option value="${p.id}">${esc(projectDisplayName(p))}</option>`).join("");
   $("#dialogFields").innerHTML = {
     project: `
       <label>客户姓名<input name="customer" placeholder="可先不填，例如：李女士"></label>
-      <label>项目名称<input name="name" placeholder="可先写：临时出图项目"></label>
-      <label>地址<input name="address" placeholder="小区/房号"></label>
+      <label>小区<input name="community" placeholder="例如：仁恒 / 长江天和"></label>
+      <label>门牌号<input name="unitNo" placeholder="例如：4-1202 / 6-305"></label>
+      <label>项目名称<input name="name" placeholder="可自动生成，例如：仁恒4-1202"></label>
+      <label>交期<input name="deadline" placeholder="例如：8月5号 / 周五 / 月底"></label>
+      <label>地址<input name="address" placeholder="详细地址，可后补"></label>
       <label>阶段<input name="stage" placeholder="水电施工"></label>
       <label>风格<input name="style" placeholder="现代原木风"></label>
     `,
@@ -775,12 +984,17 @@ function submitForm(event) {
   const form = new FormData($("#dialogForm"));
   if (type === "project") {
     const customer = String(form.get("customer") || "").trim() || "未知客户";
-    const name = String(form.get("name") || "").trim() || `${customer}项目`;
+    const community = String(form.get("community") || "").trim();
+    const unitNo = String(form.get("unitNo") || "").trim();
+    const name = String(form.get("name") || "").trim() || [community, unitNo].filter(Boolean).join("") || `${customer}项目`;
     db.projects.unshift({
       id: id(),
       customer,
       name,
+      community,
+      unitNo,
       address: form.get("address") || "",
+      deadline: normalizeReminderDate(form.get("deadline") || ""),
       stage: form.get("stage") || "待补充",
       style: form.get("style") || "",
       createdAt: new Date().toISOString(),
@@ -1590,6 +1804,8 @@ $("#stopTrackBtn").addEventListener("click", stopTracking);
 $("#dialogForm").addEventListener("submit", submitForm);
 $("#dialogCloseBtn").addEventListener("click", () => $("#formDialog").close());
 $("#projectSearch").addEventListener("input", renderProjects);
+$("#communityFilter").addEventListener("change", renderProjects);
+$("#deadlineFilter").addEventListener("change", renderProjects);
 $("#fileInput").addEventListener("change", event => handleFile(event.target.files[0]));
 $("#saveLocalFileBtn").addEventListener("click", saveLocalSelectedFile);
 $("#uploadGithubFileBtn").addEventListener("click", uploadSelectedFileToGithub);

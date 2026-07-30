@@ -63,8 +63,18 @@
 
       <section class="screen" id="projectsScreen">
         <div class="toolbar">
-          <input id="projectSearch" type="search" placeholder="搜索客户或项目" />
+          <input id="projectSearch" type="search" placeholder="搜索小区、门牌、阶段" />
           <button class="square" id="addProjectBtn">＋</button>
+        </div>
+        <div class="toolbar filter-toolbar">
+          <select id="communityFilter"></select>
+          <select id="deadlineFilter">
+            <option value="">全部交期</option>
+            <option value="overdue">已逾期</option>
+            <option value="today">今天到期</option>
+            <option value="week">7天内</option>
+            <option value="none">未设交期</option>
+          </select>
         </div>
         <div class="cards" id="projectCards"></div>
       </section>

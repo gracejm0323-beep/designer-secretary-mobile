@@ -1,4 +1,4 @@
-const CACHE = "designer-secretary-mobile-v11";
+const CACHE = "designer-secretary-mobile-v14";
 const ASSETS = ["./", "./index.html", "./mobile.css", "./mobile.js", "./manifest.json", "./icon.svg"];
 
 self.addEventListener("install", event => {
